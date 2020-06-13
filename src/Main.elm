@@ -11,7 +11,7 @@ import Date exposing (Date, fromIsoString, toIsoString)
 import Html exposing (Html, button, div, input, option, select, table, td, text, th, tr)
 import Html.Attributes exposing (..)
 import Html.Events exposing (onClick, onInput)
-import List.Extra exposing (removeAt)
+import List.Extra exposing (getAt, removeAt, setAt)
 
 
 
@@ -60,19 +60,24 @@ type alias TransactionForm =
 type alias Model =
     { table : List Transaction
     , form : TransactionForm
+    , edit : Maybe Int
     }
 
 
 init : Model
 init =
     { table = []
-    , form =
-        { transaction_date = ""
-        , bill_date = ""
-        , original_amount = FloatField (Just 0) ""
-        , billed_amount = FloatField (Just 0) ""
-        , currency = "ILS"
-        }
+    , form = emptyForm
+    , edit = Nothing
+    }
+
+
+emptyForm =
+    { transaction_date = ""
+    , bill_date = ""
+    , original_amount = FloatField (Just 0) ""
+    , billed_amount = FloatField (Just 0) ""
+    , currency = "ILS"
     }
 
 
@@ -83,6 +88,9 @@ init =
 type Msg
     = Add
     | Remove Int
+    | StartEditRow Int
+    | SaveEditRow
+    | CancelEditRow
     | EditTransDate String
     | EditBillDate String
     | EditTransAmount String
@@ -100,13 +108,37 @@ update msg model =
         Add ->
             case createTransaction model.form of
                 Just t ->
-                    { model | table = model.table ++ [ t ] }
+                    { model | table = model.table ++ [ t ], form = emptyForm }
 
                 Nothing ->
                     model
 
         Remove index ->
             { model | table = removeAt index model.table }
+
+        StartEditRow n ->
+            case getAt n model.table of
+                Nothing ->
+                    model
+
+                Just r ->
+                    { model | edit = Just n, form = toForm r }
+
+        CancelEditRow ->
+            { model | edit = Nothing, form = emptyForm }
+
+        SaveEditRow ->
+            case createTransaction model.form of
+                Just t ->
+                    case model.edit of
+                        Just i ->
+                            { model | table = setAt i t model.table, edit = Nothing, form = emptyForm }
+
+                        Nothing ->
+                            model
+
+                Nothing ->
+                    model
 
         EditTransDate d ->
             { model | form = { oldForm | transaction_date = d } }
@@ -132,35 +164,50 @@ view : Model -> Html Msg
 view model =
     div []
         [ div []
-            [ input [ placeholder "Transaction Date", value model.form.transaction_date, onInput EditTransDate ] []
-            , input [ placeholder "Bill Date", value model.form.bill_date, onInput EditBillDate ] []
-            , floatInput "Original Amount" model.form.original_amount EditTransAmount
-            , floatInput "Billed Amount" model.form.billed_amount EditBillAmount
-            , select [ onInput ChangeCurrency ] (List.map selectOption currencies)
-            , button [ onClick Add ] [ text "Add" ]
-            ]
-        , table []
+            ([ input [ placeholder "Transaction Date", value model.form.transaction_date, onInput EditTransDate ] []
+             , input [ placeholder "Bill Date", value model.form.bill_date, onInput EditBillDate ] []
+             , floatInput "Original Amount" model.form.original_amount EditTransAmount
+             , floatInput "Billed Amount" model.form.billed_amount EditBillAmount
+             , select [ onInput ChangeCurrency ] (List.map selectOption currencies)
+             ]
+                ++ globalActions model.edit
+            )
+        , table [ style "border-collapse" "collapse" ]
             ([ tr []
                 [ th [] [ text "Transaction Date" ]
                 , th [] [ text "Bill Date" ]
                 , th [] [ text "Original Amount" ]
                 , th [] [ text "Billed Amount" ]
                 , th [] [ text "Currency" ]
+                , th [] [ text "Actions" ]
                 ]
              ]
-                ++ List.map toTableRow model.table
+                ++ List.indexedMap (toTableRow model.edit) model.table
             )
         ]
 
 
-toTableRow : Transaction -> Html Msg
-toTableRow t =
-    tr []
-        [ th [] [ text (toIsoString t.transaction_date) ]
-        , th [] [ text (toIsoString t.bill_date) ]
-        , th [] [ text (String.fromFloat t.original_amount) ]
-        , th [] [ text (String.fromFloat t.billed_amount) ]
-        , th [] [ text t.currency ]
+toTableRow : Maybe Int -> Int -> Transaction -> Html Msg
+toTableRow edit i t =
+    let
+        rowStyle =
+            case Maybe.map ((==) i) edit of
+                Just True ->
+                    [ style "border-style" "solid" ]
+
+                _ ->
+                    []
+    in
+    tr rowStyle
+        [ td [] [ text (toIsoString t.transaction_date) ]
+        , td [] [ text (toIsoString t.bill_date) ]
+        , td [] [ text (String.fromFloat t.original_amount) ]
+        , td [] [ text (String.fromFloat t.billed_amount) ]
+        , td [] [ text t.currency ]
+        , td []
+            [ button [ onClick (Remove i) ] [ text "Remove" ]
+            , button [ onClick (StartEditRow i) ] [ text "Edit" ]
+            ]
         ]
 
 
@@ -203,3 +250,25 @@ createTransaction form =
             }
     in
     Maybe.map4 newTrans bill_date transaction_date billed_amount original_amount
+
+
+toForm : Transaction -> TransactionForm
+toForm t =
+    { transaction_date = Date.toIsoString t.transaction_date
+    , bill_date = Date.toIsoString t.transaction_date
+    , original_amount = FloatField (Just t.original_amount) (String.fromFloat t.original_amount)
+    , billed_amount = FloatField (Just t.billed_amount) (String.fromFloat t.billed_amount)
+    , currency = t.currency
+    }
+
+
+globalActions : Maybe Int -> List (Html Msg)
+globalActions e =
+    case e of
+        Just _ ->
+            [ button [ onClick SaveEditRow ] [ text "Save" ]
+            , button [ onClick CancelEditRow ] [ text "Cancel" ]
+            ]
+
+        Nothing ->
+            [ button [ onClick Add ] [ text "Add" ] ]
