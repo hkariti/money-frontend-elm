@@ -8,7 +8,7 @@ module Main exposing (..)
 
 import Browser
 import Date exposing (Date, fromIsoString, toIsoString)
-import DatePicker
+import DatePicker exposing (defaultSettings)
 import Html exposing (Html, button, div, input, option, select, table, td, text, th, tr)
 import Html.Attributes exposing (..)
 import Html.Events exposing (onClick, onInput)
@@ -50,7 +50,7 @@ type FloatField
 
 
 type alias TransactionForm =
-    { transaction_date : String
+    { transaction_date : Maybe Date
     , bill_date : Maybe Date
     , original_amount : FloatField
     , billed_amount : FloatField
@@ -62,7 +62,8 @@ type alias Model =
     { table : List Transaction
     , form : TransactionForm
     , edit : Maybe Int
-    , datePicker : DatePicker.DatePicker
+    , billDatePicker : DatePicker.DatePicker
+    , transactionDatePicker : DatePicker.DatePicker
     }
 
 
@@ -75,19 +76,25 @@ init _ =
     ( { table = []
       , form = emptyForm
       , edit = Nothing
-      , datePicker = datePicker
+      , billDatePicker = datePicker
+      , transactionDatePicker = datePicker
       }
-    , Cmd.map ToDatePicker datePickerFx
+    , Cmd.map (ToDatePicker AllDate) datePickerFx
     )
 
 
-settings : DatePicker.Settings
-settings =
-    DatePicker.defaultSettings
+billDateSettings : DatePicker.Settings
+billDateSettings =
+    { defaultSettings | placeholder = "Bill Date" }
+
+
+transactionDateSettings : DatePicker.Settings
+transactionDateSettings =
+    { defaultSettings | placeholder = "Transaction Date" }
 
 
 emptyForm =
-    { transaction_date = ""
+    { transaction_date = Nothing
     , bill_date = Nothing
     , original_amount = FloatField (Just 0) ""
     , billed_amount = FloatField (Just 0) ""
@@ -99,18 +106,22 @@ emptyForm =
 -- UPDATE
 
 
+type DatePickerType
+    = BillDate
+    | TransactionDate
+    | AllDate
+
+
 type Msg
     = Add
     | Remove Int
     | StartEditRow Int
     | SaveEditRow
     | CancelEditRow
-    | EditTransDate String
-      --| EditBillDate String
     | EditTransAmount String
     | EditBillAmount String
     | ChangeCurrency Currency
-    | ToDatePicker DatePicker.Msg
+    | ToDatePicker DatePickerType DatePicker.Msg
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -155,11 +166,6 @@ update msg model =
                 Nothing ->
                     ( model, Cmd.none )
 
-        EditTransDate d ->
-            ( { model | form = { oldForm | transaction_date = d } }, Cmd.none )
-
-        --EditBillDate d ->
-        --    ( { model | form = { oldForm | bill_date = d } }, Cmd.none )
         EditTransAmount a ->
             ( { model | form = { oldForm | original_amount = FloatField (String.toFloat a) a } }, Cmd.none )
 
@@ -169,10 +175,21 @@ update msg model =
         ChangeCurrency c ->
             ( { model | form = { oldForm | currency = c } }, Cmd.none )
 
-        ToDatePicker subMsg ->
+        ToDatePicker pickerType subMsg ->
             let
+                ( picker, settings ) =
+                    case pickerType of
+                        BillDate ->
+                            ( model.billDatePicker, billDateSettings )
+
+                        TransactionDate ->
+                            ( model.transactionDatePicker, transactionDateSettings )
+
+                        AllDate ->
+                            ( model.billDatePicker, billDateSettings )
+
                 ( newDatePicker, dateEvent ) =
-                    DatePicker.update settings subMsg model.datePicker
+                    DatePicker.update settings subMsg picker
 
                 newDate =
                     case dateEvent of
@@ -182,12 +199,31 @@ update msg model =
                         _ ->
                             oldForm.bill_date
             in
-            ( { model
-                | form = { oldForm | bill_date = newDate }
-                , datePicker = newDatePicker
-              }
-            , Cmd.none
-            )
+            case pickerType of
+                BillDate ->
+                    ( { model
+                        | form = { oldForm | bill_date = newDate }
+                        , billDatePicker = newDatePicker
+                      }
+                    , Cmd.none
+                    )
+
+                TransactionDate ->
+                    ( { model
+                        | form = { oldForm | transaction_date = newDate }
+                        , transactionDatePicker = newDatePicker
+                      }
+                    , Cmd.none
+                    )
+
+                AllDate ->
+                    ( { model
+                        | form = { oldForm | transaction_date = newDate, bill_date = newDate }
+                        , transactionDatePicker = newDatePicker
+                        , billDatePicker = newDatePicker
+                      }
+                    , Cmd.none
+                    )
 
 
 
@@ -198,8 +234,8 @@ view : Model -> Html Msg
 view model =
     div []
         [ div []
-            ([ input [ placeholder "Transaction Date", value model.form.transaction_date, onInput EditTransDate ] []
-             , DatePicker.view model.form.bill_date settings model.datePicker |> Html.map ToDatePicker
+            ([ DatePicker.view model.form.transaction_date transactionDateSettings model.transactionDatePicker |> Html.map (ToDatePicker TransactionDate)
+             , DatePicker.view model.form.bill_date billDateSettings model.billDatePicker |> Html.map (ToDatePicker BillDate)
              , floatInput "Original Amount" model.form.original_amount EditTransAmount
              , floatInput "Billed Amount" model.form.billed_amount EditBillAmount
              , select [ onInput ChangeCurrency ] (List.map selectOption currencies)
@@ -266,9 +302,8 @@ createTransaction form =
         bill_date =
             form.bill_date
 
-        --Result.toMaybe (fromIsoString form.bill_date)
         transaction_date =
-            Result.toMaybe (fromIsoString form.transaction_date)
+            form.transaction_date
 
         (FloatField billed_amount _) =
             form.billed_amount
@@ -289,7 +324,7 @@ createTransaction form =
 
 toForm : Transaction -> TransactionForm
 toForm t =
-    { transaction_date = Date.toIsoString t.transaction_date
+    { transaction_date = Just t.transaction_date
     , bill_date = Just t.transaction_date
     , original_amount = FloatField (Just t.original_amount) (String.fromFloat t.original_amount)
     , billed_amount = FloatField (Just t.billed_amount) (String.fromFloat t.billed_amount)
