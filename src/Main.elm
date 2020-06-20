@@ -12,6 +12,8 @@ import DatePicker exposing (defaultSettings)
 import Html exposing (Html, button, div, input, option, select, table, td, text, th, tr)
 import Html.Attributes exposing (..)
 import Html.Events exposing (onClick, onInput)
+import Http
+import Json.Decode as D
 import List.Extra exposing (getAt, removeAt, setAt)
 
 
@@ -64,6 +66,7 @@ type alias Model =
     , edit : Maybe Int
     , billDatePicker : DatePicker.DatePicker
     , transactionDatePicker : DatePicker.DatePicker
+    , message : String
     }
 
 
@@ -78,6 +81,7 @@ init _ =
       , edit = Nothing
       , billDatePicker = datePicker
       , transactionDatePicker = datePicker
+      , message = ""
       }
     , Cmd.map (ToDatePicker AllDate) datePickerFx
     )
@@ -122,6 +126,8 @@ type Msg
     | EditBillAmount String
     | ChangeCurrency Currency
     | ToDatePicker DatePickerType DatePicker.Msg
+    | Fetch
+    | GotTransactions (Result Http.Error (List Transaction))
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -225,6 +231,51 @@ update msg model =
                     , Cmd.none
                     )
 
+        Fetch ->
+            ( model
+            , Http.get
+                { url = "http://localhost:8000/transactions/"
+                , expect = Http.expectJson GotTransactions transactionParser
+                }
+            )
+
+        GotTransactions res ->
+            case res of
+                Ok l ->
+                    ( { model | table = model.table ++ l }, Cmd.none )
+
+                Err (Http.BadBody e) ->
+                    ( { model | message = e }, Cmd.none )
+
+                Err _ ->
+                    ( { model | message = "Error!" }, Cmd.none )
+
+
+dateDecoder : D.Decoder Date
+dateDecoder =
+    let
+        dateOrFail res =
+            case res of
+                Ok d ->
+                    D.succeed d
+
+                Err _ ->
+                    D.fail "Invaid date format"
+    in
+    D.map Date.fromIsoString D.string |> D.andThen dateOrFail
+
+
+transactionParser : D.Decoder (List Transaction)
+transactionParser =
+    D.list
+        (D.map5 Transaction
+            (D.field "transaction_date" dateDecoder)
+            (D.field "bill_date" dateDecoder)
+            (D.field "transaction_amount" D.float)
+            (D.field "billed_amount" D.float)
+            (D.field "original_currency" (D.nullable D.string |> D.map (Maybe.withDefault "ILS")))
+        )
+
 
 
 -- VIEW
@@ -242,6 +293,7 @@ view model =
              ]
                 ++ globalActions model.edit
             )
+        , div [ class "messagebox" ] [ text model.message ]
         , table [ style "border-collapse" "collapse" ]
             ([ tr []
                 [ th [] [ text "Transaction Date" ]
@@ -341,4 +393,6 @@ globalActions e =
             ]
 
         Nothing ->
-            [ button [ onClick Add ] [ text "Add" ] ]
+            [ button [ onClick Add ] [ text "Add" ]
+            , button [ onClick Fetch ] [ text "Fetch" ]
+            ]
