@@ -9,12 +9,16 @@ module Main exposing (..)
 import Browser
 import Date exposing (Date, fromIsoString, toIsoString)
 import DatePicker exposing (defaultSettings)
+import Debug
 import Html exposing (Html, button, div, input, option, select, table, td, text, th, tr)
 import Html.Attributes exposing (..)
 import Html.Events exposing (onClick, onInput)
 import Http
 import Json.Decode as D
+import Json.Encode as E
 import List.Extra exposing (getAt, removeAt, setAt)
+import Maybe.Extra exposing (isJust, isNothing, join)
+import Task
 
 
 
@@ -45,11 +49,17 @@ type alias Transaction =
     , billed_amount : Float
     , currency : Currency
     , description : String
+    , from_account : Maybe Int
+    , to_account : Maybe Int
     }
 
 
 type FloatField
     = FloatField (Maybe Float) String
+
+
+type IntField
+    = IntField (Maybe Int) String
 
 
 type alias TransactionForm =
@@ -59,16 +69,32 @@ type alias TransactionForm =
     , billed_amount : FloatField
     , currency : Currency
     , description : String
+    , from_account : IntField
+    , to_account : IntField
+    }
+
+
+type alias FetchModel =
+    { selected_account : String
+    , month : IntField
+    , year : IntField
+    , username : String
+    , password : String
+    , open : Bool
+    , avail_accounts : List String
     }
 
 
 type alias Model =
-    { table : List Transaction
+    { incomeTable : List Transaction
+    , outcomeTable : List Transaction
+    , interTable : List Transaction
+    , edit : Maybe ( TableSelect, Int )
     , form : TransactionForm
-    , edit : Maybe Int
     , billDatePicker : DatePicker.DatePicker
     , transactionDatePicker : DatePicker.DatePicker
     , message : String
+    , fetch : FetchModel
     }
 
 
@@ -78,12 +104,15 @@ init _ =
         ( datePicker, datePickerFx ) =
             DatePicker.init
     in
-    ( { table = []
-      , form = emptyForm
+    ( { incomeTable = []
+      , outcomeTable = []
+      , interTable = []
       , edit = Nothing
+      , form = emptyForm
       , billDatePicker = datePicker
       , transactionDatePicker = datePicker
       , message = ""
+      , fetch = resetFetch
       }
     , Cmd.map (ToDatePicker AllDate) datePickerFx
     )
@@ -107,6 +136,20 @@ emptyForm =
     , billed_amount = FloatField (Just 0) ""
     , currency = "ILS"
     , description = ""
+    , from_account = IntField (Just 0) "0"
+    , to_account = IntField Nothing ""
+    }
+
+
+resetFetch : FetchModel
+resetFetch =
+    { selected_account = "leumi"
+    , month = IntField Nothing "0"
+    , year = IntField Nothing "0"
+    , username = ""
+    , password = ""
+    , open = False
+    , avail_accounts = [ "leumi", "leumicard" ]
     }
 
 
@@ -120,18 +163,59 @@ type DatePickerType
     | AllDate
 
 
+type TableSelect
+    = IncomeTable
+    | OutcomeTable
+    | InterTable
+
+
 type Msg
-    = Add
-    | Remove Int
-    | StartEditRow Int
+    = Add TableSelect
+    | Remove TableSelect Int
+    | StartEditRow TableSelect Int
     | SaveEditRow
     | CancelEditRow
     | EditTransAmount String
     | EditBillAmount String
     | ChangeCurrency Currency
     | ToDatePicker DatePickerType DatePicker.Msg
-    | Fetch
     | GotTransactions (Result Http.Error (List Transaction))
+    | FetchOpen
+    | FetchClose
+    | FetchEditYear String
+    | FetchEditMonth String
+    | FetchEditUsername String
+    | FetchEditPassword String
+    | FetchChangeAccount String
+    | FetchGotDate Date
+    | FetchGotAccounts (Result Http.Error (List String))
+    | FetchGo
+
+
+getTable : Model -> TableSelect -> List Transaction
+getTable model tableSel =
+    case tableSel of
+        IncomeTable ->
+            model.incomeTable
+
+        OutcomeTable ->
+            model.outcomeTable
+
+        InterTable ->
+            model.interTable
+
+
+updateTable : Model -> TableSelect -> (List Transaction -> List Transaction) -> Model
+updateTable model tableSel updateFunc =
+    case tableSel of
+        IncomeTable ->
+            { model | incomeTable = updateFunc model.incomeTable }
+
+        OutcomeTable ->
+            { model | outcomeTable = updateFunc model.outcomeTable }
+
+        InterTable ->
+            { model | interTable = updateFunc model.interTable }
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -139,26 +223,40 @@ update msg model =
     let
         oldForm =
             model.form
+
+        oldFetch =
+            model.fetch
     in
     case msg of
-        Add ->
+        Add tableSel ->
             case createTransaction model.form of
                 Just t ->
-                    ( { model | table = model.table ++ [ t ], form = emptyForm }, Cmd.none )
+                    let
+                        updateTableFunc oldTable =
+                            oldTable ++ [ t ]
+
+                        updatedModel =
+                            updateTable model tableSel updateTableFunc
+                    in
+                    ( { updatedModel | form = emptyForm }, Cmd.none )
 
                 Nothing ->
                     ( model, Cmd.none )
 
-        Remove index ->
-            ( { model | table = removeAt index model.table }, Cmd.none )
+        Remove tableSel index ->
+            ( updateTable model tableSel (removeAt index), Cmd.none )
 
-        StartEditRow n ->
-            case getAt n model.table of
+        StartEditRow tableSel n ->
+            let
+                table =
+                    getTable model tableSel
+            in
+            case getAt n table of
                 Nothing ->
                     ( model, Cmd.none )
 
                 Just r ->
-                    ( { model | edit = Just n, form = toForm r }, Cmd.none )
+                    ( { model | edit = Just ( tableSel, n ), form = toForm r }, Cmd.none )
 
         CancelEditRow ->
             ( { model | edit = Nothing, form = emptyForm }, Cmd.none )
@@ -167,8 +265,12 @@ update msg model =
             case createTransaction model.form of
                 Just t ->
                     case model.edit of
-                        Just i ->
-                            ( { model | table = setAt i t model.table, edit = Nothing, form = emptyForm }, Cmd.none )
+                        Just ( tableSel, i ) ->
+                            let
+                                updatedModel =
+                                    updateTable model tableSel (setAt i t)
+                            in
+                            ( { updatedModel | edit = Nothing, form = emptyForm }, Cmd.none )
 
                         Nothing ->
                             ( model, Cmd.none )
@@ -235,24 +337,133 @@ update msg model =
                     , Cmd.none
                     )
 
-        Fetch ->
-            ( model
-            , Http.get
-                { url = "http://localhost:8000/transactions/"
-                , expect = Http.expectJson GotTransactions transactionParser
-                }
-            )
-
+        --Fetch ->
+        --    ( model
+        --    , Http.get
+        --        { url = "http://localhost:8000/transactions/"
+        --        , expect = Http.expectJson GotTransactions transactionParser
+        --        }
+        --    )
         GotTransactions res ->
             case res of
                 Ok l ->
-                    ( { model | table = model.table ++ l }, Cmd.none )
+                    let
+                        isIncome : Transaction -> Bool
+                        isIncome t =
+                            isNothing t.from_account && isJust t.to_account
+
+                        isOutcome : Transaction -> Bool
+                        isOutcome t =
+                            isNothing t.to_account && isJust t.from_account
+
+                        filter1 =
+                            List.partition isIncome l
+
+                        filter2 =
+                            List.partition isOutcome (Tuple.second filter1)
+
+                        incomeTrans =
+                            Tuple.first filter1
+
+                        outcomeTrans =
+                            Tuple.first filter2
+
+                        interTrans =
+                            Tuple.second filter2
+                    in
+                    ( { model
+                        | incomeTable = model.incomeTable ++ incomeTrans
+                        , outcomeTable = model.outcomeTable ++ outcomeTrans
+                        , interTable = model.interTable ++ interTrans
+                        , message = "Added new entries"
+                      }
+                    , Cmd.none
+                    )
 
                 Err (Http.BadBody e) ->
                     ( { model | message = e }, Cmd.none )
 
                 Err _ ->
                     ( { model | message = "Error!" }, Cmd.none )
+
+        FetchClose ->
+            ( { model | fetch = { oldFetch | open = False } }, Cmd.none )
+
+        FetchOpen ->
+            let
+                fetchDateCmd =
+                    Date.today |> Task.perform FetchGotDate
+            in
+            ( { model | fetch = { oldFetch | open = True } }, fetchDateCmd )
+
+        FetchEditYear y ->
+            ( { model | fetch = { oldFetch | year = IntField (String.toInt y) y } }, Cmd.none )
+
+        FetchEditMonth m ->
+            ( { model | fetch = { oldFetch | month = IntField (String.toInt m) m } }, Cmd.none )
+
+        FetchEditUsername m ->
+            ( { model | fetch = { oldFetch | username = m } }, Cmd.none )
+
+        FetchEditPassword m ->
+            ( { model | fetch = { oldFetch | password = m } }, Cmd.none )
+
+        FetchChangeAccount a ->
+            ( { model | fetch = { oldFetch | selected_account = a } }, Cmd.none )
+
+        FetchGotAccounts res ->
+            case res of
+                Ok a ->
+                    ( { model | fetch = { oldFetch | avail_accounts = a } }, Cmd.none )
+
+                Err (Http.BadBody e) ->
+                    ( { model | message = e }, Cmd.none )
+
+                Err _ ->
+                    ( { model | message = "Error!" }, Cmd.none )
+
+        FetchGotDate d ->
+            let
+                y =
+                    Date.year d
+
+                m =
+                    Date.monthNumber d
+            in
+            ( { model
+                | fetch =
+                    { oldFetch
+                        | year = IntField (Just y) (String.fromInt y)
+                        , month = IntField (Just m) (String.fromInt m)
+                    }
+              }
+            , Cmd.none
+            )
+
+        FetchGo ->
+            let
+                (IntField _ monthValue) =
+                    model.fetch.month
+
+                (IntField _ yearValue) =
+                    model.fetch.year
+
+                fetchCmd =
+                    Http.post
+                        { url = "http://localhost:8000/fetch/" ++ model.fetch.selected_account
+                        , expect = Http.expectJson GotTransactions transactionParser
+                        , body =
+                            Http.jsonBody
+                                (E.object
+                                    [ ( "user", E.string model.fetch.username )
+                                    , ( "pass", E.string model.fetch.password )
+                                    , ( "month", E.string monthValue )
+                                    , ( "year", E.string yearValue )
+                                    ]
+                                )
+                        }
+            in
+            ( { model | message = "Fetching..." }, fetchCmd )
 
 
 dateDecoder : D.Decoder Date
@@ -272,14 +483,21 @@ dateDecoder =
 transactionParser : D.Decoder (List Transaction)
 transactionParser =
     D.list
-        (D.map6 Transaction
+        (D.map8 Transaction
             (D.field "transaction_date" dateDecoder)
             (D.field "bill_date" dateDecoder)
             (D.field "transaction_amount" D.float)
             (D.field "billed_amount" D.float)
             (D.field "original_currency" (D.nullable D.string |> D.map (Maybe.withDefault "ILS")))
             (D.field "description" D.string)
+            (D.field "from_account" (D.nullable D.int))
+            (D.field "to_account" (D.nullable D.int))
         )
+
+
+accountsParser : D.Decoder (List String)
+accountsParser =
+    D.list (D.field "name" D.string)
 
 
 
@@ -296,44 +514,84 @@ view model =
              , floatInput "Billed Amount" model.form.billed_amount EditBillAmount
              , select [ onInput ChangeCurrency ] (List.map selectOption currencies)
              ]
-                ++ globalActions model.edit
+                ++ globalActions model.edit model.fetch
             )
         , div [ class "messagebox" ] [ text model.message ]
-        , table [ style "border-collapse" "collapse" ]
-            ([ tr []
-                [ th [] [ text "Transaction Date" ]
-                , th [] [ text "Bill Date" ]
-                , th [] [ text "Original Amount" ]
-                , th [] [ text "Billed Amount" ]
-                , th [] [ text "Currency" ]
-                , th [] [ text "Actions" ]
-                ]
-             ]
-                ++ List.indexedMap (toTableRow model.edit) model.table
-            )
+        , tableView model IncomeTable
+        , tableView model OutcomeTable
+        , tableView model InterTable
         ]
 
 
-toTableRow : Maybe Int -> Int -> Transaction -> Html Msg
-toTableRow edit i t =
+tableView : Model -> TableSelect -> Html Msg
+tableView model tableSel =
+    let
+        entries =
+            getTable model tableSel
+
+        currentEdit =
+            model.edit
+                |> Maybe.andThen
+                    (\( t, i ) ->
+                        if t == tableSel then
+                            Just i
+
+                        else
+                            Nothing
+                    )
+    in
+    table [ style "border-collapse" "collapse" ]
+        ([ tr []
+            [ th [] [ text "Transaction Date" ]
+            , th [] [ text "Bill Date" ]
+            , th [] [ text "From Account" ]
+            , th [] [ text "To Account" ]
+            , th [] [ text "Original Amount" ]
+            , th [] [ text "Billed Amount" ]
+            , th [] [ text "Currency" ]
+            , th [] [ text "Actions" ]
+            ]
+         ]
+            ++ List.indexedMap (toTableRow tableSel currentEdit) entries
+        )
+
+
+toTableRow : TableSelect -> Maybe Int -> Int -> Transaction -> Html Msg
+toTableRow tableSel edit i t =
     let
         rowStyle =
-            case Maybe.map ((==) i) edit of
+            (case Maybe.map ((==) i) edit of
                 Just True ->
                     [ style "border-style" "solid" ]
 
                 _ ->
                     []
+            )
+                ++ (case ( t.from_account, t.to_account ) of
+                        ( Nothing, Just _ ) ->
+                            [ style "background" "lightblue" ]
+
+                        ( Just _, Nothing ) ->
+                            [ style "background" "pink" ]
+
+                        ( Nothing, Nothing ) ->
+                            [ style "background" "red" ]
+
+                        ( Just _, Just _ ) ->
+                            [ style "background" "red" ]
+                   )
     in
     tr rowStyle
         [ td [] [ text (toIsoString t.transaction_date) ]
         , td [] [ text (toIsoString t.bill_date) ]
+        , td [] [ text (t.from_account |> Maybe.map String.fromInt |> Maybe.withDefault "") ]
+        , td [] [ text (t.to_account |> Maybe.map String.fromInt |> Maybe.withDefault "") ]
         , td [] [ text (String.fromFloat t.original_amount) ]
         , td [] [ text (String.fromFloat t.billed_amount) ]
         , td [] [ text t.currency ]
         , td []
-            [ button [ onClick (Remove i) ] [ text "Remove" ]
-            , button [ onClick (StartEditRow i) ] [ text "Edit" ]
+            [ button [ onClick (Remove tableSel i) ] [ text "Remove" ]
+            , button [ onClick (StartEditRow tableSel i) ] [ text "Edit" ]
             ]
         ]
 
@@ -353,6 +611,16 @@ floatInput place field msg =
             input [ placeholder place, value s, onInput msg ] []
 
 
+intInput : String -> IntField -> (String -> msg) -> Html msg
+intInput place field msg =
+    case field of
+        IntField Nothing s ->
+            input [ placeholder place, value s, onInput msg, style "border-color" "red" ] []
+
+        IntField _ s ->
+            input [ placeholder place, value s, onInput msg ] []
+
+
 createTransaction : TransactionForm -> Maybe Transaction
 createTransaction form =
     let
@@ -368,16 +636,33 @@ createTransaction form =
         (FloatField original_amount _) =
             form.original_amount
 
-        newTrans bd td ba oa =
+        (IntField from_account _) =
+            form.from_account
+
+        (IntField to_account _) =
+            form.to_account
+
+        oneOrMore : Maybe a -> Maybe b -> Maybe ( Maybe a, Maybe b )
+        oneOrMore a b =
+            case ( a, b ) of
+                ( Nothing, Nothing ) ->
+                    Nothing
+
+                _ ->
+                    Just ( a, b )
+
+        newTrans bd td ba oa fa_ta =
             { transaction_date = td
             , bill_date = bd
             , billed_amount = ba
             , original_amount = oa
             , currency = form.currency
             , description = ""
+            , from_account = Tuple.first fa_ta
+            , to_account = Tuple.second fa_ta
             }
     in
-    Maybe.map4 newTrans bill_date transaction_date billed_amount original_amount
+    Maybe.map5 newTrans bill_date transaction_date billed_amount original_amount (oneOrMore from_account to_account)
 
 
 toForm : Transaction -> TransactionForm
@@ -388,11 +673,13 @@ toForm t =
     , billed_amount = FloatField (Just t.billed_amount) (String.fromFloat t.billed_amount)
     , currency = t.currency
     , description = t.description
+    , from_account = IntField t.from_account (t.from_account |> Maybe.map String.fromInt |> Maybe.withDefault "")
+    , to_account = IntField t.to_account (t.to_account |> Maybe.map String.fromInt |> Maybe.withDefault "")
     }
 
 
-globalActions : Maybe Int -> List (Html Msg)
-globalActions e =
+globalActions : Maybe x -> FetchModel -> List (Html Msg)
+globalActions e f =
     case e of
         Just _ ->
             [ button [ onClick SaveEditRow ] [ text "Save" ]
@@ -400,6 +687,24 @@ globalActions e =
             ]
 
         Nothing ->
-            [ button [ onClick Add ] [ text "Add" ]
-            , button [ onClick Fetch ] [ text "Fetch" ]
+            [ button [ onClick (Add OutcomeTable) ] [ text "Add" ] ]
+                ++ fetchView f
+
+
+fetchView : FetchModel -> List (Html Msg)
+fetchView f =
+    case f.open of
+        True ->
+            [ button [ onClick FetchClose ] [ text "Fetch" ]
+            , div []
+                [ input [ placeholder "Username", value f.username, onInput FetchEditUsername ] []
+                , input [ placeholder "Password", value f.password, onInput FetchEditPassword ] []
+                , intInput "Month" f.month FetchEditMonth
+                , intInput "Year" f.year FetchEditYear
+                , select [ onInput FetchChangeAccount ] (List.map selectOption f.avail_accounts)
+                , button [ onClick FetchGo ] [ text "Go" ]
+                ]
             ]
+
+        False ->
+            [ button [ onClick FetchOpen ] [ text "Fetch" ] ]
