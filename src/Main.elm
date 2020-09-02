@@ -44,6 +44,7 @@ type alias Transaction =
     , original_amount : Float
     , billed_amount : Float
     , currency : Currency
+    , description : String
     }
 
 
@@ -57,6 +58,7 @@ type alias TransactionForm =
     , original_amount : FloatField
     , billed_amount : FloatField
     , currency : Currency
+    , description : String
     }
 
 
@@ -97,12 +99,14 @@ transactionDateSettings =
     { defaultSettings | placeholder = "Transaction Date" }
 
 
+emptyForm : TransactionForm
 emptyForm =
     { transaction_date = Nothing
     , bill_date = Nothing
     , original_amount = FloatField (Just 0) ""
     , billed_amount = FloatField (Just 0) ""
     , currency = "ILS"
+    , description = ""
     }
 
 
@@ -268,12 +272,13 @@ dateDecoder =
 transactionParser : D.Decoder (List Transaction)
 transactionParser =
     D.list
-        (D.map5 Transaction
+        (D.map6 Transaction
             (D.field "transaction_date" dateDecoder)
             (D.field "bill_date" dateDecoder)
             (D.field "transaction_amount" D.float)
             (D.field "billed_amount" D.float)
             (D.field "original_currency" (D.nullable D.string |> D.map (Maybe.withDefault "ILS")))
+            (D.field "description" D.string)
         )
 
 
@@ -369,6 +374,7 @@ createTransaction form =
             , billed_amount = ba
             , original_amount = oa
             , currency = form.currency
+            , description = ""
             }
     in
     Maybe.map4 newTrans bill_date transaction_date billed_amount original_amount
@@ -381,6 +387,7 @@ toForm t =
     , original_amount = FloatField (Just t.original_amount) (String.fromFloat t.original_amount)
     , billed_amount = FloatField (Just t.billed_amount) (String.fromFloat t.billed_amount)
     , currency = t.currency
+    , description = t.description
     }
 
 
