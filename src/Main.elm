@@ -16,7 +16,7 @@ import Html.Events exposing (onClick, onInput)
 import Http
 import Json.Decode as D
 import Json.Encode as E
-import List.Extra exposing (getAt, removeAt, setAt)
+import List.Extra exposing (gatherWith, getAt, removeAt, setAt)
 import Maybe.Extra exposing (isJust, isNothing, join)
 import Task
 
@@ -520,6 +520,7 @@ view model =
         , tableView model IncomeTable
         , tableView model OutcomeTable
         , tableView model InterTable
+        , summaryTableView model
         ]
 
 
@@ -540,7 +541,7 @@ tableView model tableSel =
                             Nothing
                     )
     in
-    table [ style "border-collapse" "collapse" ]
+    table [ style "border-collapse" "collapse", style "margin" "5px" ]
         ([ tr []
             [ th [] [ text "Transaction Date" ]
             , th [] [ text "Bill Date" ]
@@ -549,6 +550,7 @@ tableView model tableSel =
             , th [] [ text "Original Amount" ]
             , th [] [ text "Billed Amount" ]
             , th [] [ text "Currency" ]
+            , th [] [ text "Description" ]
             , th [] [ text "Actions" ]
             ]
          ]
@@ -589,11 +591,68 @@ toTableRow tableSel edit i t =
         , td [] [ text (String.fromFloat t.original_amount) ]
         , td [] [ text (String.fromFloat t.billed_amount) ]
         , td [] [ text t.currency ]
+        , td [] [ text t.description ]
         , td []
             [ button [ onClick (Remove tableSel i) ] [ text "Remove" ]
             , button [ onClick (StartEditRow tableSel i) ] [ text "Edit" ]
             ]
         ]
+
+
+summaryTableView : Model -> Html Msg
+summaryTableView model =
+    let
+        all_rows =
+            model.incomeTable ++ model.outcomeTable ++ model.interTable
+
+        compareMaybe : Maybe a -> Maybe a -> Bool
+        compareMaybe a b =
+            case ( a, b ) of
+                ( Nothing, Nothing ) ->
+                    True
+
+                ( Just x, Just y ) ->
+                    x == y
+
+                _ ->
+                    False
+
+        compareAccounts : Transaction -> Transaction -> Bool
+        compareAccounts t s =
+            compareMaybe t.from_account s.from_account && compareMaybe t.to_account s.to_account
+
+        sumAggregate : List Transaction -> Maybe { to : Maybe Int, from : Maybe Int, total : Float }
+        sumAggregate t =
+            case List.head t of
+                Nothing ->
+                    Nothing
+
+                Just h ->
+                    Just { to = h.to_account, from = h.from_account, total = List.map .billed_amount t |> List.sum }
+
+        tuple2list : ( a, List a ) -> List a
+        tuple2list ( x, y ) =
+            x :: y
+
+        rowsByAccount r =
+            gatherWith compareAccounts r |> List.map tuple2list |> List.map sumAggregate |> Maybe.Extra.values
+
+        tableRow r =
+            tr []
+                [ td [] [ text (r.from |> Maybe.map String.fromInt |> Maybe.withDefault "") ]
+                , td [] [ text (r.to |> Maybe.map String.fromInt |> Maybe.withDefault "") ]
+                , td [] [ text (r.total |> String.fromFloat) ]
+                ]
+    in
+    table [ style "border-collapse" "collapse", style "margin" "5px" ]
+        ([ tr []
+            [ th [] [ text "From Account" ]
+            , th [] [ text "To Account" ]
+            , th [] [ text "Total" ]
+            ]
+         ]
+            ++ List.map tableRow (rowsByAccount all_rows)
+        )
 
 
 selectOption : String -> Html msg
