@@ -54,6 +54,14 @@ type alias Transaction =
     }
 
 
+type alias Account =
+    { id : Int
+    , name : String
+    , backend_id : String
+    , backend_type : String
+    }
+
+
 type FloatField
     = FloatField (Maybe Float) String
 
@@ -69,19 +77,19 @@ type alias TransactionForm =
     , billed_amount : FloatField
     , currency : Currency
     , description : String
-    , from_account : IntField
-    , to_account : IntField
+    , from_account : String
+    , to_account : String
     }
 
 
 type alias FetchModel =
-    { selected_account : String
+    { selected_backend : String
     , month : IntField
     , year : IntField
     , username : String
     , password : String
     , open : Bool
-    , avail_accounts : List String
+    , avail_backends : List String
     }
 
 
@@ -95,6 +103,7 @@ type alias Model =
     , transactionDatePicker : DatePicker.DatePicker
     , message : String
     , fetch : FetchModel
+    , accounts : List Account
     }
 
 
@@ -113,8 +122,12 @@ init _ =
       , transactionDatePicker = datePicker
       , message = ""
       , fetch = resetFetch
+      , accounts = []
       }
-    , Cmd.map (ToDatePicker AllDate) datePickerFx
+    , Cmd.batch
+        [ getAccountsCmd
+        , Cmd.map (ToDatePicker AllDate) datePickerFx
+        ]
     )
 
 
@@ -136,20 +149,20 @@ emptyForm =
     , billed_amount = FloatField (Just 0) ""
     , currency = "ILS"
     , description = ""
-    , from_account = IntField (Just 0) "0"
-    , to_account = IntField Nothing ""
+    , from_account = ""
+    , to_account = ""
     }
 
 
 resetFetch : FetchModel
 resetFetch =
-    { selected_account = "leumi"
+    { selected_backend = ""
     , month = IntField Nothing "0"
     , year = IntField Nothing "0"
     , username = ""
     , password = ""
     , open = False
-    , avail_accounts = [ "leumi", "leumicard" ]
+    , avail_backends = []
     }
 
 
@@ -180,15 +193,15 @@ type Msg
     | ChangeCurrency Currency
     | ToDatePicker DatePickerType DatePicker.Msg
     | GotTransactions (Result Http.Error (List Transaction))
+    | GotAccounts (Result Http.Error (List Account))
     | FetchOpen
     | FetchClose
     | FetchEditYear String
     | FetchEditMonth String
     | FetchEditUsername String
     | FetchEditPassword String
-    | FetchChangeAccount String
+    | FetchChangeBackend String
     | FetchGotDate Date
-    | FetchGotAccounts (Result Http.Error (List String))
     | FetchGo
 
 
@@ -216,6 +229,22 @@ updateTable model tableSel updateFunc =
 
         InterTable ->
             { model | interTable = updateFunc model.interTable }
+
+
+getAccountsCmd =
+    Http.get
+        { url = "http://localhost:8000/accounts/"
+        , expect = Http.expectJson GotAccounts accountsParser
+        }
+
+
+fetchUpdateBackends : FetchModel -> List String -> FetchModel
+fetchUpdateBackends m b =
+    let
+        default_backend =
+            List.head b |> Maybe.withDefault ""
+    in
+    { m | avail_backends = b, selected_backend = default_backend }
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -408,13 +437,17 @@ update msg model =
         FetchEditPassword m ->
             ( { model | fetch = { oldFetch | password = m } }, Cmd.none )
 
-        FetchChangeAccount a ->
-            ( { model | fetch = { oldFetch | selected_account = a } }, Cmd.none )
+        FetchChangeBackend a ->
+            ( { model | fetch = { oldFetch | selected_backend = a } }, Cmd.none )
 
-        FetchGotAccounts res ->
+        GotAccounts res ->
             case res of
                 Ok a ->
-                    ( { model | fetch = { oldFetch | avail_accounts = a } }, Cmd.none )
+                    let
+                        backends =
+                            List.map .backend_type a |> List.Extra.unique
+                    in
+                    ( { model | accounts = a, fetch = fetchUpdateBackends oldFetch backends }, Cmd.none )
 
                 Err (Http.BadBody e) ->
                     ( { model | message = e }, Cmd.none )
@@ -450,7 +483,7 @@ update msg model =
 
                 fetchCmd =
                     Http.post
-                        { url = "http://localhost:8000/fetch/" ++ model.fetch.selected_account
+                        { url = "http://localhost:8000/fetch/" ++ model.fetch.selected_backend
                         , expect = Http.expectJson GotTransactions transactionParser
                         , body =
                             Http.jsonBody
@@ -480,6 +513,17 @@ dateDecoder =
     D.map Date.fromIsoString D.string |> D.andThen dateOrFail
 
 
+accountsParser : D.Decoder (List Account)
+accountsParser =
+    D.list
+        (D.map4 Account
+            (D.field "id" D.int)
+            (D.field "name" D.string)
+            (D.field "backend_id" D.string)
+            (D.field "backend_type" D.string)
+        )
+
+
 transactionParser : D.Decoder (List Transaction)
 transactionParser =
     D.list
@@ -493,11 +537,6 @@ transactionParser =
             (D.field "from_account" (D.nullable D.int))
             (D.field "to_account" (D.nullable D.int))
         )
-
-
-accountsParser : D.Decoder (List String)
-accountsParser =
-    D.list (D.field "name" D.string)
 
 
 
@@ -554,12 +593,12 @@ tableView model tableSel =
             , th [] [ text "Actions" ]
             ]
          ]
-            ++ List.indexedMap (toTableRow tableSel currentEdit) entries
+            ++ List.indexedMap (toTableRow model.accounts tableSel currentEdit) entries
         )
 
 
-toTableRow : TableSelect -> Maybe Int -> Int -> Transaction -> Html Msg
-toTableRow tableSel edit i t =
+toTableRow : List Account -> TableSelect -> Maybe Int -> Int -> Transaction -> Html Msg
+toTableRow accounts tableSel edit i t =
     let
         rowStyle =
             (case Maybe.map ((==) i) edit of
@@ -582,12 +621,15 @@ toTableRow tableSel edit i t =
                         ( Just _, Just _ ) ->
                             [ style "background" "red" ]
                    )
+
+        accountName id =
+            List.filter (.id >> (==) id) accounts |> List.head |> Maybe.map .name |> Maybe.withDefault "Invalid account"
     in
     tr rowStyle
         [ td [] [ text (toIsoString t.transaction_date) ]
         , td [] [ text (toIsoString t.bill_date) ]
-        , td [] [ text (t.from_account |> Maybe.map String.fromInt |> Maybe.withDefault "") ]
-        , td [] [ text (t.to_account |> Maybe.map String.fromInt |> Maybe.withDefault "") ]
+        , td [] [ text (t.from_account |> Maybe.map accountName |> Maybe.withDefault "") ]
+        , td [] [ text (t.to_account |> Maybe.map accountName |> Maybe.withDefault "") ]
         , td [] [ text (String.fromFloat t.original_amount) ]
         , td [] [ text (String.fromFloat t.billed_amount) ]
         , td [] [ text t.currency ]
@@ -637,10 +679,13 @@ summaryTableView model =
         rowsByAccount r =
             gatherWith compareAccounts r |> List.map tuple2list |> List.map sumAggregate |> Maybe.Extra.values
 
+        accountName id =
+            List.filter (.id >> (==) id) model.accounts |> List.head |> Maybe.map .name |> Maybe.withDefault "Invalid account"
+
         tableRow r =
             tr []
-                [ td [] [ text (r.from |> Maybe.map String.fromInt |> Maybe.withDefault "") ]
-                , td [] [ text (r.to |> Maybe.map String.fromInt |> Maybe.withDefault "") ]
+                [ td [] [ text (r.from |> Maybe.map accountName |> Maybe.withDefault "") ]
+                , td [] [ text (r.to |> Maybe.map accountName |> Maybe.withDefault "") ]
                 , td [] [ text (r.total |> String.fromFloat) ]
                 ]
     in
@@ -695,11 +740,11 @@ createTransaction form =
         (FloatField original_amount _) =
             form.original_amount
 
-        (IntField from_account _) =
-            form.from_account
+        from_account =
+            String.toInt form.from_account
 
-        (IntField to_account _) =
-            form.to_account
+        to_account =
+            String.toInt form.to_account
 
         oneOrMore : Maybe a -> Maybe b -> Maybe ( Maybe a, Maybe b )
         oneOrMore a b =
@@ -732,8 +777,8 @@ toForm t =
     , billed_amount = FloatField (Just t.billed_amount) (String.fromFloat t.billed_amount)
     , currency = t.currency
     , description = t.description
-    , from_account = IntField t.from_account (t.from_account |> Maybe.map String.fromInt |> Maybe.withDefault "")
-    , to_account = IntField t.to_account (t.to_account |> Maybe.map String.fromInt |> Maybe.withDefault "")
+    , from_account = t.from_account |> Maybe.map String.fromInt |> Maybe.withDefault ""
+    , to_account = t.to_account |> Maybe.map String.fromInt |> Maybe.withDefault ""
     }
 
 
@@ -760,7 +805,7 @@ fetchView f =
                 , input [ placeholder "Password", value f.password, onInput FetchEditPassword ] []
                 , intInput "Month" f.month FetchEditMonth
                 , intInput "Year" f.year FetchEditYear
-                , select [ onInput FetchChangeAccount ] (List.map selectOption f.avail_accounts)
+                , select [ onInput FetchChangeBackend ] (List.map selectOption f.avail_backends)
                 , button [ onClick FetchGo ] [ text "Go" ]
                 ]
             ]
