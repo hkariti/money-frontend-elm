@@ -191,6 +191,8 @@ type Msg
     | EditTransAmount String
     | EditBillAmount String
     | ChangeCurrency Currency
+    | ChangeFromAccount String
+    | ChangeToAccount String
     | ToDatePicker DatePickerType DatePicker.Msg
     | GotTransactions (Result Http.Error (List Transaction))
     | GotAccounts (Result Http.Error (List Account))
@@ -315,6 +317,12 @@ update msg model =
 
         ChangeCurrency c ->
             ( { model | form = { oldForm | currency = c } }, Cmd.none )
+
+        ChangeFromAccount id ->
+            ( { model | form = { oldForm | from_account = id } }, Cmd.none )
+
+        ChangeToAccount id ->
+            ( { model | form = { oldForm | to_account = id } }, Cmd.none )
 
         ToDatePicker pickerType subMsg ->
             let
@@ -545,9 +553,25 @@ transactionParser =
 
 view : Model -> Html Msg
 view model =
+    let
+        listAccounts : (String -> Msg) -> String -> Html Msg
+        listAccounts onInputMsg selection =
+            let
+                emptyAccount : Html Msg
+                emptyAccount =
+                    option [ value "", selected (selection == "") ] [ text "--- Outside ---" ]
+
+                accountOption : Account -> Html Msg
+                accountOption a =
+                    option [ value (String.fromInt a.id), selected (String.fromInt a.id == selection) ] [ text a.name ]
+            in
+            select [ onInput onInputMsg ] (emptyAccount :: List.map accountOption model.accounts)
+    in
     div []
         [ div []
-            ([ DatePicker.view model.form.transaction_date transactionDateSettings model.transactionDatePicker |> Html.map (ToDatePicker TransactionDate)
+            ([ listAccounts ChangeFromAccount model.form.from_account
+             , listAccounts ChangeToAccount model.form.to_account
+             , DatePicker.view model.form.transaction_date transactionDateSettings model.transactionDatePicker |> Html.map (ToDatePicker TransactionDate)
              , DatePicker.view model.form.bill_date billDateSettings model.billDatePicker |> Html.map (ToDatePicker BillDate)
              , floatInput "Original Amount" model.form.original_amount EditTransAmount
              , floatInput "Billed Amount" model.form.billed_amount EditBillAmount
@@ -619,7 +643,7 @@ toTableRow accounts tableSel edit i t =
                             [ style "background" "red" ]
 
                         ( Just _, Just _ ) ->
-                            [ style "background" "red" ]
+                            [ style "background" "white" ]
                    )
 
         accountName id =
