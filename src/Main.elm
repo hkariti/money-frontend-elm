@@ -180,6 +180,7 @@ type Msg
     | CancelEditRow
     | EditTransAmount String
     | EditBillAmount String
+    | EditDescription String
     | ChangeCurrency Currency
     | ChangeFromAccount String
     | ChangeToAccount String
@@ -269,6 +270,9 @@ update msg model =
 
         EditBillAmount a ->
             ( { model | form = { oldForm | billed_amount = FloatField (String.toFloat a) a } }, Cmd.none )
+
+        EditDescription a ->
+            ( { model | form = { oldForm | description = a } }, Cmd.none )
 
         ChangeCurrency c ->
             ( { model | form = { oldForm | currency = c } }, Cmd.none )
@@ -502,6 +506,7 @@ view model =
              , floatInput "Original Amount" model.form.original_amount EditTransAmount
              , floatInput "Billed Amount" model.form.billed_amount EditBillAmount
              , select [ onInput ChangeCurrency ] (List.map selectOption currencies)
+             , input [ placeholder "Description", value model.form.description, onInput EditDescription ] []
              ]
                 ++ globalActions model.edit model.fetch
             )
@@ -704,7 +709,7 @@ createTransaction form =
             , billed_amount = ba
             , original_amount = oa
             , currency = form.currency
-            , description = ""
+            , description = form.description
             , from_account = Tuple.first fa_ta
             , to_account = Tuple.second fa_ta
             }
