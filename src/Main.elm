@@ -94,10 +94,8 @@ type alias FetchModel =
 
 
 type alias Model =
-    { incomeTable : List Transaction
-    , outcomeTable : List Transaction
-    , interTable : List Transaction
-    , edit : Maybe ( TableSelect, Int )
+    { transactions : List Transaction
+    , edit : Maybe Int
     , form : TransactionForm
     , billDatePicker : DatePicker.DatePicker
     , transactionDatePicker : DatePicker.DatePicker
@@ -113,9 +111,7 @@ init _ =
         ( datePicker, datePickerFx ) =
             DatePicker.init
     in
-    ( { incomeTable = []
-      , outcomeTable = []
-      , interTable = []
+    ( { transactions = []
       , edit = Nothing
       , form = emptyForm
       , billDatePicker = datePicker
@@ -176,16 +172,10 @@ type DatePickerType
     | AllDate
 
 
-type TableSelect
-    = IncomeTable
-    | OutcomeTable
-    | InterTable
-
-
 type Msg
-    = Add TableSelect
-    | Remove TableSelect Int
-    | StartEditRow TableSelect Int
+    = Add
+    | Remove Int
+    | StartEditRow Int
     | SaveEditRow
     | CancelEditRow
     | EditTransAmount String
@@ -205,32 +195,6 @@ type Msg
     | FetchChangeBackend String
     | FetchGotDate Date
     | FetchGo
-
-
-getTable : Model -> TableSelect -> List Transaction
-getTable model tableSel =
-    case tableSel of
-        IncomeTable ->
-            model.incomeTable
-
-        OutcomeTable ->
-            model.outcomeTable
-
-        InterTable ->
-            model.interTable
-
-
-updateTable : Model -> TableSelect -> (List Transaction -> List Transaction) -> Model
-updateTable model tableSel updateFunc =
-    case tableSel of
-        IncomeTable ->
-            { model | incomeTable = updateFunc model.incomeTable }
-
-        OutcomeTable ->
-            { model | outcomeTable = updateFunc model.outcomeTable }
-
-        InterTable ->
-            { model | interTable = updateFunc model.interTable }
 
 
 getAccountsCmd =
@@ -259,35 +223,24 @@ update msg model =
             model.fetch
     in
     case msg of
-        Add tableSel ->
+        Add ->
             case createTransaction model.form of
                 Just t ->
-                    let
-                        updateTableFunc oldTable =
-                            oldTable ++ [ t ]
-
-                        updatedModel =
-                            updateTable model tableSel updateTableFunc
-                    in
-                    ( { updatedModel | form = emptyForm }, Cmd.none )
+                    ( { model | form = emptyForm, transactions = t :: model.transactions }, Cmd.none )
 
                 Nothing ->
                     ( model, Cmd.none )
 
-        Remove tableSel index ->
-            ( updateTable model tableSel (removeAt index), Cmd.none )
+        Remove index ->
+            ( { model | transactions = removeAt index model.transactions }, Cmd.none )
 
-        StartEditRow tableSel n ->
-            let
-                table =
-                    getTable model tableSel
-            in
-            case getAt n table of
+        StartEditRow n ->
+            case getAt n model.transactions of
                 Nothing ->
                     ( model, Cmd.none )
 
                 Just r ->
-                    ( { model | edit = Just ( tableSel, n ), form = toForm r }, Cmd.none )
+                    ( { model | edit = Just n, form = toForm r }, Cmd.none )
 
         CancelEditRow ->
             ( { model | edit = Nothing, form = emptyForm }, Cmd.none )
@@ -296,12 +249,14 @@ update msg model =
             case createTransaction model.form of
                 Just t ->
                     case model.edit of
-                        Just ( tableSel, i ) ->
-                            let
-                                updatedModel =
-                                    updateTable model tableSel (setAt i t)
-                            in
-                            ( { updatedModel | edit = Nothing, form = emptyForm }, Cmd.none )
+                        Just i ->
+                            ( { model
+                                | edit = Nothing
+                                , form = emptyForm
+                                , transactions = setAt i t model.transactions
+                              }
+                            , Cmd.none
+                            )
 
                         Nothing ->
                             ( model, Cmd.none )
@@ -384,36 +339,7 @@ update msg model =
         GotTransactions res ->
             case res of
                 Ok l ->
-                    let
-                        isIncome : Transaction -> Bool
-                        isIncome t =
-                            isNothing t.from_account && isJust t.to_account
-
-                        isOutcome : Transaction -> Bool
-                        isOutcome t =
-                            isNothing t.to_account && isJust t.from_account
-
-                        filter1 =
-                            List.partition isIncome l
-
-                        filter2 =
-                            List.partition isOutcome (Tuple.second filter1)
-
-                        incomeTrans =
-                            Tuple.first filter1
-
-                        outcomeTrans =
-                            Tuple.first filter2
-
-                        interTrans =
-                            Tuple.second filter2
-                    in
-                    ( { model
-                        | incomeTable = model.incomeTable ++ incomeTrans
-                        , outcomeTable = model.outcomeTable ++ outcomeTrans
-                        , interTable = model.interTable ++ interTrans
-                        , message = "Added new entries"
-                      }
+                    ( { model | transactions = l ++ model.transactions, message = "Added new entries" }
                     , Cmd.none
                     )
 
@@ -580,29 +506,69 @@ view model =
                 ++ globalActions model.edit model.fetch
             )
         , div [ class "messagebox" ] [ text model.message ]
-        , tableView model IncomeTable
-        , tableView model OutcomeTable
-        , tableView model InterTable
+        , tableView model (\t -> Maybe.Extra.isNothing t.from_account && Maybe.Extra.isJust t.to_account)
+        , tableView model (\t -> Maybe.Extra.isJust t.from_account && Maybe.Extra.isNothing t.to_account)
+        , tableView model (\t -> not (Maybe.Extra.isNothing t.from_account) && not (Maybe.Extra.isNothing t.to_account))
         , summaryTableView model
         ]
 
 
-tableView : Model -> TableSelect -> Html Msg
-tableView model tableSel =
+tableView : Model -> (Transaction -> Bool) -> Html Msg
+tableView model rowFilter =
     let
+        entries : List ( Int, Transaction )
         entries =
-            getTable model tableSel
+            model.transactions |> List.indexedMap Tuple.pair |> List.filter (Tuple.second >> rowFilter)
 
-        currentEdit =
-            model.edit
-                |> Maybe.andThen
-                    (\( t, i ) ->
-                        if t == tableSel then
-                            Just i
+        toTableRow : ( Int, Transaction ) -> Html Msg
+        toTableRow ( i, t ) =
+            let
+                rowStyle =
+                    (case Maybe.map ((==) i) model.edit of
+                        Just True ->
+                            [ style "border-style" "solid" ]
 
-                        else
-                            Nothing
+                        _ ->
+                            []
                     )
+                        ++ (case ( t.from_account, t.to_account ) of
+                                ( Nothing, Just _ ) ->
+                                    [ style "background" "lightblue" ]
+
+                                ( Just _, Nothing ) ->
+                                    [ style "background" "pink" ]
+
+                                ( Nothing, Nothing ) ->
+                                    [ style "background" "red" ]
+
+                                ( Just x, Just y ) ->
+                                    if x == y then
+                                        [ style "background" "red" ]
+
+                                    else
+                                        [ style "background" "white" ]
+                           )
+
+                accountName id =
+                    List.filter (.id >> (==) id) model.accounts
+                        |> List.head
+                        |> Maybe.map .name
+                        |> Maybe.withDefault "Invalid account"
+            in
+            tr rowStyle
+                [ td [] [ text (toIsoString t.transaction_date) ]
+                , td [] [ text (toIsoString t.bill_date) ]
+                , td [] [ text (t.from_account |> Maybe.map accountName |> Maybe.withDefault "") ]
+                , td [] [ text (t.to_account |> Maybe.map accountName |> Maybe.withDefault "") ]
+                , td [] [ text (String.fromFloat t.original_amount) ]
+                , td [] [ text (String.fromFloat t.billed_amount) ]
+                , td [] [ text t.currency ]
+                , td [] [ text t.description ]
+                , td []
+                    [ button [ onClick (Remove i) ] [ text "Remove" ]
+                    , button [ onClick (StartEditRow i) ] [ text "Edit" ]
+                    ]
+                ]
     in
     table [ style "border-collapse" "collapse", style "margin" "5px" ]
         ([ tr []
@@ -617,60 +583,13 @@ tableView model tableSel =
             , th [] [ text "Actions" ]
             ]
          ]
-            ++ List.indexedMap (toTableRow model.accounts tableSel currentEdit) entries
+            ++ List.map toTableRow entries
         )
-
-
-toTableRow : List Account -> TableSelect -> Maybe Int -> Int -> Transaction -> Html Msg
-toTableRow accounts tableSel edit i t =
-    let
-        rowStyle =
-            (case Maybe.map ((==) i) edit of
-                Just True ->
-                    [ style "border-style" "solid" ]
-
-                _ ->
-                    []
-            )
-                ++ (case ( t.from_account, t.to_account ) of
-                        ( Nothing, Just _ ) ->
-                            [ style "background" "lightblue" ]
-
-                        ( Just _, Nothing ) ->
-                            [ style "background" "pink" ]
-
-                        ( Nothing, Nothing ) ->
-                            [ style "background" "red" ]
-
-                        ( Just _, Just _ ) ->
-                            [ style "background" "white" ]
-                   )
-
-        accountName id =
-            List.filter (.id >> (==) id) accounts |> List.head |> Maybe.map .name |> Maybe.withDefault "Invalid account"
-    in
-    tr rowStyle
-        [ td [] [ text (toIsoString t.transaction_date) ]
-        , td [] [ text (toIsoString t.bill_date) ]
-        , td [] [ text (t.from_account |> Maybe.map accountName |> Maybe.withDefault "") ]
-        , td [] [ text (t.to_account |> Maybe.map accountName |> Maybe.withDefault "") ]
-        , td [] [ text (String.fromFloat t.original_amount) ]
-        , td [] [ text (String.fromFloat t.billed_amount) ]
-        , td [] [ text t.currency ]
-        , td [] [ text t.description ]
-        , td []
-            [ button [ onClick (Remove tableSel i) ] [ text "Remove" ]
-            , button [ onClick (StartEditRow tableSel i) ] [ text "Edit" ]
-            ]
-        ]
 
 
 summaryTableView : Model -> Html Msg
 summaryTableView model =
     let
-        all_rows =
-            model.incomeTable ++ model.outcomeTable ++ model.interTable
-
         compareMaybe : Maybe a -> Maybe a -> Bool
         compareMaybe a b =
             case ( a, b ) of
@@ -720,7 +639,7 @@ summaryTableView model =
             , th [] [ text "Total" ]
             ]
          ]
-            ++ List.map tableRow (rowsByAccount all_rows)
+            ++ List.map tableRow (rowsByAccount model.transactions)
         )
 
 
@@ -815,7 +734,7 @@ globalActions e f =
             ]
 
         Nothing ->
-            [ button [ onClick (Add OutcomeTable) ] [ text "Add" ] ]
+            [ button [ onClick Add ] [ text "Add" ] ]
                 ++ fetchView f
 
 
