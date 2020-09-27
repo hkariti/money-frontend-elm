@@ -1,5 +1,6 @@
 module Main exposing (..)
 
+import Account
 import Bootstrap.CDN as CDN
 import Bootstrap.Grid as Grid
 import Bootstrap.Navbar as Navbar
@@ -30,6 +31,7 @@ main =
 
 type alias Model =
     { transactions : Transactions.Model
+    , accounts : Account.Model
     , key : Nav.Key
     , navState : Navbar.State
     , page : Page
@@ -49,17 +51,21 @@ init flags url key =
         ( transModel, transCmd ) =
             Transactions.init ()
 
+        ( accModel, accCmd ) =
+            Account.init ()
+
         ( navState, navCmd ) =
             Navbar.initialState NavMsg
 
         page =
             urlUpdate url
     in
-    ( Model transModel key navState page, Cmd.batch [ Cmd.map ToTransaction transCmd, navCmd ] )
+    ( Model transModel accModel key navState page, Cmd.batch [ Cmd.map ToTransaction transCmd, navCmd, Cmd.map ToAccount accCmd ] )
 
 
 type Msg
     = ToTransaction Transactions.Msg
+    | ToAccount Account.Msg
     | MsgNone
     | NavMsg Navbar.State
     | LinkClicked Browser.UrlRequest
@@ -86,6 +92,13 @@ update msg model =
                     Transactions.update t model.transactions
             in
             ( { model | transactions = newModel }, Cmd.map ToTransaction cmd )
+
+        ToAccount t ->
+            let
+                ( newModel, cmd ) =
+                    Account.update t model.accounts
+            in
+            ( { model | accounts = newModel }, Cmd.map ToAccount cmd )
 
         MsgNone ->
             ( model, Cmd.none )
@@ -156,4 +169,4 @@ mainContent model =
             Html.map ToTransaction (Transactions.view model.transactions)
 
         AccountsPage ->
-            text "Acounts"
+            Html.map ToAccount (Account.view model.accounts)
