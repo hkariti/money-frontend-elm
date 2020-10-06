@@ -3,13 +3,15 @@ module Transactions exposing (Model, Msg, init, update, view)
 import Date exposing (Date, fromIsoString, toIsoString)
 import DatePicker exposing (defaultSettings)
 import Debug
+import Dict exposing (Dict)
 import Html exposing (Html, button, div, input, option, select, table, td, text, th, tr)
 import Html.Attributes exposing (..)
 import Html.Events exposing (onClick, onInput)
 import Http
 import Json.Decode as D
+import Json.Decode.Pipeline as Dp
 import Json.Encode as E
-import List.Extra exposing (gatherWith, getAt, removeAt, setAt)
+import List.Extra exposing (gatherEqualsBy, gatherWith, getAt, removeAt, setAt)
 import Maybe.Extra exposing (isJust, isNothing, join)
 import Task
 
@@ -36,6 +38,7 @@ type alias Transaction =
     , description : String
     , from_account : Maybe Int
     , to_account : Maybe Int
+    , category : String
     }
 
 
@@ -64,6 +67,7 @@ type alias TransactionForm =
     , description : String
     , from_account : String
     , to_account : String
+    , category : String
     }
 
 
@@ -87,6 +91,7 @@ type alias Model =
     , message : String
     , fetch : FetchModel
     , accounts : List Account
+    , categories : List String
     }
 
 
@@ -104,9 +109,11 @@ init _ =
       , message = ""
       , fetch = resetFetch
       , accounts = []
+      , categories = []
       }
     , Cmd.batch
         [ getAccountsCmd
+        , getCategoriesCmd
         , Cmd.map (ToDatePicker AllDate) datePickerFx
         ]
     )
@@ -132,6 +139,7 @@ emptyForm =
     , description = ""
     , from_account = ""
     , to_account = ""
+    , category = ""
     }
 
 
@@ -166,12 +174,14 @@ type Msg
     | EditTransAmount String
     | EditBillAmount String
     | EditDescription String
+    | ChangeCategory Int String
     | ChangeCurrency Currency
     | ChangeFromAccount String
     | ChangeToAccount String
     | ToDatePicker DatePickerType DatePicker.Msg
     | GotTransactions (Result Http.Error (List Transaction))
     | GotAccounts (Result Http.Error (List Account))
+    | GotCategories (Result Http.Error (List String))
     | FetchOpen
     | FetchClose
     | FetchEditYear String
@@ -187,6 +197,13 @@ getAccountsCmd =
     Http.get
         { url = "http://localhost:8000/accounts/"
         , expect = Http.expectJson GotAccounts accountsParser
+        }
+
+
+getCategoriesCmd =
+    Http.get
+        { url = "http://localhost:8000/categories/"
+        , expect = Http.expectJson GotCategories categoriesParser
         }
 
 
@@ -258,6 +275,22 @@ update msg model =
 
         EditDescription a ->
             ( { model | form = { oldForm | description = a } }, Cmd.none )
+
+        ChangeCategory i a ->
+            if i < 0 then
+                ( { model | form = { oldForm | category = a } }, Cmd.none )
+
+            else
+                let
+                    oldTrans =
+                        getAt i model.transactions
+                in
+                case oldTrans of
+                    Nothing ->
+                        ( model, Cmd.none )
+
+                    Just t ->
+                        ( { model | transactions = setAt i { t | category = a } model.transactions }, Cmd.none )
 
         ChangeCurrency c ->
             ( { model | form = { oldForm | currency = c } }, Cmd.none )
@@ -378,6 +411,17 @@ update msg model =
                 Err _ ->
                     ( { model | message = "Error!" }, Cmd.none )
 
+        GotCategories res ->
+            case res of
+                Ok a ->
+                    ( { model | categories = a }, Cmd.none )
+
+                Err (Http.BadBody e) ->
+                    ( { model | message = e }, Cmd.none )
+
+                Err _ ->
+                    ( { model | message = "Error!" }, Cmd.none )
+
         FetchGotDate d ->
             let
                 y =
@@ -436,6 +480,11 @@ dateDecoder =
     D.map Date.fromIsoString D.string |> D.andThen dateOrFail
 
 
+categoriesParser : D.Decoder (List String)
+categoriesParser =
+    D.list (D.field "title" D.string)
+
+
 accountsParser : D.Decoder (List Account)
 accountsParser =
     D.list
@@ -450,15 +499,17 @@ accountsParser =
 transactionParser : D.Decoder (List Transaction)
 transactionParser =
     D.list
-        (D.map8 Transaction
-            (D.field "transaction_date" dateDecoder)
-            (D.field "bill_date" dateDecoder)
-            (D.field "transaction_amount" D.float)
-            (D.field "billed_amount" D.float)
-            (D.field "original_currency" (D.nullable D.string |> D.map (Maybe.withDefault "ILS")))
-            (D.field "description" D.string)
-            (D.field "from_account" (D.nullable D.int))
-            (D.field "to_account" (D.nullable D.int))
+        (D.succeed Transaction
+            |> Dp.required "transaction_date" dateDecoder
+            |> Dp.required "bill_date" dateDecoder
+            |> Dp.required "transaction_amount" D.float
+            |> Dp.required "billed_amount" D.float
+            |> Dp.required "original_currency" (D.nullable D.string |> D.map (Maybe.withDefault "ILS"))
+            |> Dp.required "description" D.string
+            |> Dp.required "from_account" (D.nullable D.int)
+            |> Dp.required "to_account" (D.nullable D.int)
+            |> Dp.hardcoded ""
+         -- FIXME: Add support for fetching/saving categories
         )
 
 
@@ -492,6 +543,7 @@ view model =
              , floatInput "Billed Amount" model.form.billed_amount EditBillAmount
              , select [ onInput ChangeCurrency ] (List.map selectOption currencies)
              , input [ placeholder "Description", value model.form.description, onInput EditDescription ] []
+             , select [ onInput (ChangeCategory -1) ] (option [ value "" ] [ text "--" ] :: List.map selectOption model.categories)
              ]
                 ++ globalActions model.edit model.fetch
             )
@@ -500,6 +552,7 @@ view model =
         , tableView model (\t -> Maybe.Extra.isJust t.from_account && Maybe.Extra.isNothing t.to_account)
         , tableView model (\t -> not (Maybe.Extra.isNothing t.from_account) && not (Maybe.Extra.isNothing t.to_account))
         , summaryTableView model
+        , categoryTableView model
         ]
 
 
@@ -544,6 +597,10 @@ tableView model rowFilter =
                         |> List.head
                         |> Maybe.map .name
                         |> Maybe.withDefault "Invalid account"
+
+                selectOptionWithDefault : String -> String -> String -> Html msg
+                selectOptionWithDefault selection v txt =
+                    option [ value v, selected (txt == selection) ] [ text txt ]
             in
             tr rowStyle
                 [ td [] [ text (toIsoString t.transaction_date) ]
@@ -554,6 +611,10 @@ tableView model rowFilter =
                 , td [] [ text (String.fromFloat t.billed_amount) ]
                 , td [] [ text t.currency ]
                 , td [] [ text t.description ]
+                , td []
+                    [ select [ onInput (ChangeCategory i) ]
+                        (List.map2 (selectOptionWithDefault t.category) ("" :: model.categories) ("--" :: model.categories))
+                    ]
                 , td []
                     [ button [ onClick (Remove i) ] [ text "Remove" ]
                     , button [ onClick (StartEditRow i) ] [ text "Edit" ]
@@ -570,6 +631,7 @@ tableView model rowFilter =
             , th [] [ text "Billed Amount" ]
             , th [] [ text "Currency" ]
             , th [] [ text "Description" ]
+            , th [] [ text "Category" ]
             , th [] [ text "Actions" ]
             ]
          ]
@@ -630,6 +692,44 @@ summaryTableView model =
             ]
          ]
             ++ List.map tableRow (rowsByAccount model.transactions)
+        )
+
+
+categoryTableView : Model -> Html Msg
+categoryTableView model =
+    let
+        addToCategory : Transaction -> Dict String Float -> Dict String Float
+        addToCategory t d =
+            Dict.update t.category (\v -> Just (Maybe.withDefault 0 v + t.billed_amount)) d
+
+        getExpenses : List Transaction -> List Transaction
+        getExpenses =
+            List.filter (\t -> isJust t.from_account && isNothing t.to_account)
+
+        tableRow : ( String, Float ) -> Html Msg
+        tableRow ( c, v ) =
+            tr []
+                [ td []
+                    [ if String.isEmpty c then
+                        text "--"
+
+                      else
+                        text c
+                    ]
+                , tr [] [ text (String.fromFloat v) ]
+                ]
+
+        rowsByCategory : List Transaction -> List ( String, Float )
+        rowsByCategory =
+            getExpenses >> List.foldl addToCategory Dict.empty >> Dict.toList
+    in
+    table [ style "border-collapse" "collapse", style "margin" "5px" ]
+        ([ tr []
+            [ th [] [ text "Category" ]
+            , th [] [ text "Total" ]
+            ]
+         ]
+            ++ List.map tableRow (rowsByCategory model.transactions)
         )
 
 
@@ -697,6 +797,7 @@ createTransaction form =
             , description = form.description
             , from_account = Tuple.first fa_ta
             , to_account = Tuple.second fa_ta
+            , category = form.category
             }
     in
     Maybe.map5 newTrans bill_date transaction_date billed_amount original_amount (oneOrMore from_account to_account)
@@ -712,6 +813,7 @@ toForm t =
     , description = t.description
     , from_account = t.from_account |> Maybe.map String.fromInt |> Maybe.withDefault ""
     , to_account = t.to_account |> Maybe.map String.fromInt |> Maybe.withDefault ""
+    , category = t.category
     }
 
 
