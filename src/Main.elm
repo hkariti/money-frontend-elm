@@ -6,6 +6,7 @@ import Bootstrap.Grid as Grid
 import Bootstrap.Navbar as Navbar
 import Browser
 import Browser.Navigation as Nav
+import Categories
 import Html exposing (..)
 import Html.Attributes exposing (..)
 import Transactions
@@ -32,6 +33,7 @@ main =
 type alias Model =
     { transactions : Transactions.Model
     , accounts : Account.Model
+    , categories : Categories.Model
     , key : Nav.Key
     , navState : Navbar.State
     , page : Page
@@ -43,6 +45,7 @@ type Page
     | Home
     | TransPage
     | AccountsPage
+    | CategoriesPage
 
 
 init : () -> Url.Url -> Nav.Key -> ( Model, Cmd Msg )
@@ -54,18 +57,31 @@ init flags url key =
         ( accModel, accCmd ) =
             Account.init ()
 
+        ( catModel, catCmd ) =
+            Categories.init ()
+
         ( navState, navCmd ) =
             Navbar.initialState NavMsg
 
         page =
             urlUpdate url
     in
-    ( Model transModel accModel key navState page, Cmd.batch [ Cmd.map ToTransaction transCmd, navCmd, Cmd.map ToAccount accCmd ] )
+    ( Model transModel accModel catModel key navState page
+    , Cmd.batch
+        [ Cmd.map ToTransaction transCmd
+        , navCmd
+        , Cmd.map ToAccount
+            accCmd
+        , Cmd.map ToCategory
+            catCmd
+        ]
+    )
 
 
 type Msg
     = ToTransaction Transactions.Msg
     | ToAccount Account.Msg
+    | ToCategory Categories.Msg
     | MsgNone
     | NavMsg Navbar.State
     | LinkClicked Browser.UrlRequest
@@ -100,6 +116,13 @@ update msg model =
             in
             ( { model | accounts = newModel }, Cmd.map ToAccount cmd )
 
+        ToCategory t ->
+            let
+                ( newModel, cmd ) =
+                    Categories.update t model.categories
+            in
+            ( { model | categories = newModel }, Cmd.map ToCategory cmd )
+
         MsgNone ->
             ( model, Cmd.none )
 
@@ -129,6 +152,7 @@ routeParser =
         [ UrlParser.map Home top
         , UrlParser.map TransPage (UrlParser.s "transactions")
         , UrlParser.map AccountsPage (UrlParser.s "accounts")
+        , UrlParser.map CategoriesPage (UrlParser.s "categories")
         ]
 
 
@@ -152,6 +176,7 @@ menu model =
         |> Navbar.items
             [ Navbar.itemLink [ href "#transactions" ] [ text "Transactions" ]
             , Navbar.itemLink [ href "#accounts" ] [ text "Accounts" ]
+            , Navbar.itemLink [ href "#categories" ] [ text "Categories" ]
             ]
         |> Navbar.view model.navState
 
@@ -170,3 +195,6 @@ mainContent model =
 
         AccountsPage ->
             Html.map ToAccount (Account.view model.accounts)
+
+        CategoriesPage ->
+            Html.map ToCategory (Categories.view model.categories)
