@@ -574,22 +574,17 @@ tableView model rowFilter =
                         _ ->
                             []
                     )
-                        ++ (case ( String.isEmpty t.from_account, String.isEmpty t.to_account ) of
-                                ( True, False ) ->
-                                    [ style "background" "lightblue" ]
+                        ++ (if t.from_account == t.to_account then
+                                [ style "background" "red" ]
 
-                                ( False, True ) ->
-                                    [ style "background" "pink" ]
+                            else if String.isEmpty t.from_account then
+                                [ style "background" "lightblue" ]
 
-                                ( True, True ) ->
-                                    [ style "background" "red" ]
+                            else if String.isEmpty t.to_account then
+                                [ style "background" "pink" ]
 
-                                ( False, False ) ->
-                                    if t.from_account == t.to_account then
-                                        [ style "background" "red" ]
-
-                                    else
-                                        [ style "background" "white" ]
+                            else
+                                [ style "background" "white" ]
                            )
 
                 selectOptionWithDefault : String -> String -> String -> Html msg
