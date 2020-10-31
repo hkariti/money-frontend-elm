@@ -191,6 +191,8 @@ type Msg
     | FetchChangeBackend String
     | FetchGotDate Date
     | FetchGo
+    | ClickSaveTable (Transaction -> Bool)
+    | FinishSaveTable (Transaction -> Bool) (Result Http.Error ())
 
 
 getAccountsCmd =
@@ -465,6 +467,36 @@ update msg model =
             in
             ( { model | message = "Fetching..." }, fetchCmd )
 
+        ClickSaveTable table ->
+            let
+                rows =
+                    List.filter table model.transactions
+
+                fetchCmd =
+                    Http.post
+                        { url = "http://localhost:8000/transactions/"
+                        , expect = Http.expectWhatever (FinishSaveTable table)
+                        , body =
+                            Http.jsonBody (E.list transactionEncoder rows)
+                        }
+            in
+            ( { model | message = "Saving..." }, fetchCmd )
+
+        FinishSaveTable table res ->
+            let
+                inverseTable =
+                    table >> not
+            in
+            case res of
+                Ok () ->
+                    ( { model | transactions = List.filter inverseTable model.transactions, message = "Saved!" }, Cmd.none )
+
+                Err (Http.BadBody e) ->
+                    ( { model | message = e }, Cmd.none )
+
+                Err _ ->
+                    ( { model | message = "Error!" }, Cmd.none )
+
 
 dateDecoder : D.Decoder Date
 dateDecoder =
@@ -510,6 +542,30 @@ transactionParser =
             |> Dp.required "to_account" (D.nullable D.string |> D.map (Maybe.withDefault ""))
             |> Dp.required "category" (D.nullable D.string |> D.map (Maybe.withDefault ""))
         )
+
+
+transactionEncoder : Transaction -> E.Value
+transactionEncoder t =
+    let
+        nullIfEmpty : String -> E.Value
+        nullIfEmpty s =
+            if String.isEmpty s then
+                E.null
+
+            else
+                E.string s
+    in
+    E.object
+        [ ( "transaction_date", E.string (toIsoString t.transaction_date) )
+        , ( "bill_date", E.string (toIsoString t.bill_date) )
+        , ( "transaction_amount", E.float t.original_amount )
+        , ( "billed_amount", E.float t.billed_amount )
+        , ( "original_currency", E.string t.currency )
+        , ( "description", E.string t.description )
+        , ( "from_account", nullIfEmpty t.from_account )
+        , ( "to_account", nullIfEmpty t.to_account )
+        , ( "category", nullIfEmpty t.category )
+        ]
 
 
 incomeFilter : Transaction -> Bool
@@ -564,15 +620,24 @@ view model =
             )
         , div [ class "messagebox" ] [ text model.message ]
         , div []
-            [ h2 [] [ text "Income" ]
+            [ h2 []
+                [ text "Income"
+                , button [ style "font-size" "0.5em", onClick (ClickSaveTable incomeFilter) ] [ text "Save & clear" ]
+                ]
             , tableView model incomeFilter
             ]
         , div []
-            [ h2 [] [ text "Expenses" ]
+            [ h2 []
+                [ text "Expenses"
+                , button [ style "font-size" "0.5em", onClick (ClickSaveTable expenseFilter) ] [ text "Save & clear" ]
+                ]
             , tableView model expenseFilter
             ]
         , div []
-            [ h2 [] [ text "Inter-account transfers" ]
+            [ h2 []
+                [ text "Inter-account transfers"
+                , button [ style "font-size" "0.5em", onClick (ClickSaveTable interFilter) ] [ text "Save & clear" ]
+                ]
             , tableView model interFilter
             ]
         , div []
