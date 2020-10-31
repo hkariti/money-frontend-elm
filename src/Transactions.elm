@@ -36,8 +36,8 @@ type alias Transaction =
     , billed_amount : Float
     , currency : Currency
     , description : String
-    , from_account : Maybe Int
-    , to_account : Maybe Int
+    , from_account : String
+    , to_account : String
     , category : String
     }
 
@@ -295,11 +295,11 @@ update msg model =
         ChangeCurrency c ->
             ( { model | form = { oldForm | currency = c } }, Cmd.none )
 
-        ChangeFromAccount id ->
-            ( { model | form = { oldForm | from_account = id } }, Cmd.none )
+        ChangeFromAccount acc ->
+            ( { model | form = { oldForm | from_account = acc } }, Cmd.none )
 
-        ChangeToAccount id ->
-            ( { model | form = { oldForm | to_account = id } }, Cmd.none )
+        ChangeToAccount acc ->
+            ( { model | form = { oldForm | to_account = acc } }, Cmd.none )
 
         ToDatePicker pickerType subMsg ->
             let
@@ -506,10 +506,9 @@ transactionParser =
             |> Dp.required "billed_amount" D.float
             |> Dp.required "original_currency" (D.nullable D.string |> D.map (Maybe.withDefault "ILS"))
             |> Dp.required "description" D.string
-            |> Dp.required "from_account" (D.nullable D.int)
-            |> Dp.required "to_account" (D.nullable D.int)
-            |> Dp.hardcoded ""
-         -- FIXME: Add support for fetching/saving categories
+            |> Dp.required "from_account" (D.nullable D.string |> D.map (Maybe.withDefault ""))
+            |> Dp.required "to_account" (D.nullable D.string |> D.map (Maybe.withDefault ""))
+            |> Dp.required "category" (D.nullable D.string |> D.map (Maybe.withDefault ""))
         )
 
 
@@ -529,7 +528,7 @@ view model =
 
                 accountOption : Account -> Html Msg
                 accountOption a =
-                    option [ value (String.fromInt a.id), selected (String.fromInt a.id == selection) ] [ text a.name ]
+                    option [ value a.name, selected (a.name == selection) ] [ text a.name ]
             in
             select [ onInput onInputMsg ] (emptyAccount :: List.map accountOption model.accounts)
     in
@@ -543,14 +542,15 @@ view model =
              , floatInput "Billed Amount" model.form.billed_amount EditBillAmount
              , select [ onInput ChangeCurrency ] (List.map selectOption currencies)
              , input [ placeholder "Description", value model.form.description, onInput EditDescription ] []
-             , select [ onInput (ChangeCategory -1) ] (option [ value "" ] [ text "--" ] :: List.map selectOption model.categories)
+             , select [ onInput (ChangeCategory -1) ]
+                (option [ value "" ] [ text "--" ] :: List.map selectOption model.categories)
              ]
                 ++ globalActions model.edit model.fetch
             )
         , div [ class "messagebox" ] [ text model.message ]
-        , tableView model (\t -> Maybe.Extra.isNothing t.from_account && Maybe.Extra.isJust t.to_account)
-        , tableView model (\t -> Maybe.Extra.isJust t.from_account && Maybe.Extra.isNothing t.to_account)
-        , tableView model (\t -> not (Maybe.Extra.isNothing t.from_account) && not (Maybe.Extra.isNothing t.to_account))
+        , tableView model (\t -> String.isEmpty t.from_account && not (String.isEmpty t.to_account))
+        , tableView model (\t -> not (String.isEmpty t.from_account) && String.isEmpty t.to_account)
+        , tableView model (\t -> not (String.isEmpty t.from_account) && not (String.isEmpty t.to_account))
         , summaryTableView model
         , categoryTableView model
         ]
@@ -574,29 +574,23 @@ tableView model rowFilter =
                         _ ->
                             []
                     )
-                        ++ (case ( t.from_account, t.to_account ) of
-                                ( Nothing, Just _ ) ->
+                        ++ (case ( String.isEmpty t.from_account, String.isEmpty t.to_account ) of
+                                ( True, False ) ->
                                     [ style "background" "lightblue" ]
 
-                                ( Just _, Nothing ) ->
+                                ( False, True ) ->
                                     [ style "background" "pink" ]
 
-                                ( Nothing, Nothing ) ->
+                                ( True, True ) ->
                                     [ style "background" "red" ]
 
-                                ( Just x, Just y ) ->
-                                    if x == y then
+                                ( False, False ) ->
+                                    if t.from_account == t.to_account then
                                         [ style "background" "red" ]
 
                                     else
                                         [ style "background" "white" ]
                            )
-
-                accountName id =
-                    List.filter (.id >> (==) id) model.accounts
-                        |> List.head
-                        |> Maybe.map .name
-                        |> Maybe.withDefault "Invalid account"
 
                 selectOptionWithDefault : String -> String -> String -> Html msg
                 selectOptionWithDefault selection v txt =
@@ -605,8 +599,8 @@ tableView model rowFilter =
             tr rowStyle
                 [ td [] [ text (toIsoString t.transaction_date) ]
                 , td [] [ text (toIsoString t.bill_date) ]
-                , td [] [ text (t.from_account |> Maybe.map accountName |> Maybe.withDefault "") ]
-                , td [] [ text (t.to_account |> Maybe.map accountName |> Maybe.withDefault "") ]
+                , td [] [ text t.from_account ]
+                , td [] [ text t.to_account ]
                 , td [] [ text (String.fromFloat t.original_amount) ]
                 , td [] [ text (String.fromFloat t.billed_amount) ]
                 , td [] [ text t.currency ]
@@ -656,9 +650,9 @@ summaryTableView model =
 
         compareAccounts : Transaction -> Transaction -> Bool
         compareAccounts t s =
-            compareMaybe t.from_account s.from_account && compareMaybe t.to_account s.to_account
+            (t.from_account == s.from_account) && (t.to_account == s.to_account)
 
-        sumAggregate : List Transaction -> Maybe { to : Maybe Int, from : Maybe Int, total : Float }
+        sumAggregate : List Transaction -> Maybe { to : String, from : String, total : Float }
         sumAggregate t =
             case List.head t of
                 Nothing ->
@@ -674,13 +668,10 @@ summaryTableView model =
         rowsByAccount r =
             gatherWith compareAccounts r |> List.map tuple2list |> List.map sumAggregate |> Maybe.Extra.values
 
-        accountName id =
-            List.filter (.id >> (==) id) model.accounts |> List.head |> Maybe.map .name |> Maybe.withDefault "Invalid account"
-
         tableRow r =
             tr []
-                [ td [] [ text (r.from |> Maybe.map accountName |> Maybe.withDefault "") ]
-                , td [] [ text (r.to |> Maybe.map accountName |> Maybe.withDefault "") ]
+                [ td [] [ text r.from ]
+                , td [] [ text r.to ]
                 , td [] [ text (r.total |> String.fromFloat) ]
                 ]
     in
@@ -704,7 +695,7 @@ categoryTableView model =
 
         getExpenses : List Transaction -> List Transaction
         getExpenses =
-            List.filter (\t -> isJust t.from_account && isNothing t.to_account)
+            List.filter (\t -> not (String.isEmpty t.from_account) && String.isEmpty t.to_account)
 
         tableRow : ( String, Float ) -> Html Msg
         tableRow ( c, v ) =
@@ -773,20 +764,13 @@ createTransaction form =
         (FloatField original_amount _) =
             form.original_amount
 
-        from_account =
-            String.toInt form.from_account
-
-        to_account =
-            String.toInt form.to_account
-
-        oneOrMore : Maybe a -> Maybe b -> Maybe ( Maybe a, Maybe b )
+        oneOrMore : String -> String -> Maybe ( String, String )
         oneOrMore a b =
-            case ( a, b ) of
-                ( Nothing, Nothing ) ->
-                    Nothing
+            if String.isEmpty a && String.isEmpty b then
+                Nothing
 
-                _ ->
-                    Just ( a, b )
+            else
+                Just ( a, b )
 
         newTrans bd td ba oa fa_ta =
             { transaction_date = td
@@ -800,7 +784,7 @@ createTransaction form =
             , category = form.category
             }
     in
-    Maybe.map5 newTrans bill_date transaction_date billed_amount original_amount (oneOrMore from_account to_account)
+    Maybe.map5 newTrans bill_date transaction_date billed_amount original_amount (oneOrMore form.from_account form.to_account)
 
 
 toForm : Transaction -> TransactionForm
@@ -811,8 +795,8 @@ toForm t =
     , billed_amount = FloatField (Just t.billed_amount) (String.fromFloat t.billed_amount)
     , currency = t.currency
     , description = t.description
-    , from_account = t.from_account |> Maybe.map String.fromInt |> Maybe.withDefault ""
-    , to_account = t.to_account |> Maybe.map String.fromInt |> Maybe.withDefault ""
+    , from_account = t.from_account
+    , to_account = t.to_account
     , category = t.category
     }
 
