@@ -4,7 +4,7 @@ import Date exposing (Date, fromIsoString, toIsoString)
 import DatePicker exposing (defaultSettings)
 import Debug
 import Dict exposing (Dict)
-import Html exposing (Html, button, div, input, option, select, table, td, text, th, tr)
+import Html exposing (Html, button, div, h2, input, option, select, table, td, text, th, tr)
 import Html.Attributes exposing (..)
 import Html.Events exposing (onClick, onInput)
 import Http
@@ -512,6 +512,21 @@ transactionParser =
         )
 
 
+incomeFilter : Transaction -> Bool
+incomeFilter t =
+    String.isEmpty t.from_account && not (String.isEmpty t.to_account)
+
+
+expenseFilter : Transaction -> Bool
+expenseFilter t =
+    not (String.isEmpty t.from_account) && String.isEmpty t.to_account
+
+
+interFilter : Transaction -> Bool
+interFilter t =
+    not (String.isEmpty t.from_account) && not (String.isEmpty t.to_account)
+
+
 
 -- VIEW
 
@@ -548,11 +563,26 @@ view model =
                 ++ globalActions model.edit model.fetch
             )
         , div [ class "messagebox" ] [ text model.message ]
-        , tableView model (\t -> String.isEmpty t.from_account && not (String.isEmpty t.to_account))
-        , tableView model (\t -> not (String.isEmpty t.from_account) && String.isEmpty t.to_account)
-        , tableView model (\t -> not (String.isEmpty t.from_account) && not (String.isEmpty t.to_account))
-        , summaryTableView model
-        , categoryTableView model
+        , div []
+            [ h2 [] [ text "Income" ]
+            , tableView model incomeFilter
+            ]
+        , div []
+            [ h2 [] [ text "Expenses" ]
+            , tableView model expenseFilter
+            ]
+        , div []
+            [ h2 [] [ text "Inter-account transfers" ]
+            , tableView model interFilter
+            ]
+        , div []
+            [ h2 [] [ text "Account summary" ]
+            , summaryTableView model
+            ]
+        , div []
+            [ h2 [] [ text "Category summary" ]
+            , categoryTableView model
+            ]
         ]
 
 
@@ -688,10 +718,6 @@ categoryTableView model =
         addToCategory t d =
             Dict.update t.category (\v -> Just (Maybe.withDefault 0 v + t.billed_amount)) d
 
-        getExpenses : List Transaction -> List Transaction
-        getExpenses =
-            List.filter (\t -> not (String.isEmpty t.from_account) && String.isEmpty t.to_account)
-
         tableRow : ( String, Float ) -> Html Msg
         tableRow ( c, v ) =
             tr []
@@ -707,7 +733,7 @@ categoryTableView model =
 
         rowsByCategory : List Transaction -> List ( String, Float )
         rowsByCategory =
-            getExpenses >> List.foldl addToCategory Dict.empty >> Dict.toList
+            List.filter expenseFilter >> List.foldl addToCategory Dict.empty >> Dict.toList
     in
     table [ style "border-collapse" "collapse", style "margin" "5px" ]
         ([ tr []
