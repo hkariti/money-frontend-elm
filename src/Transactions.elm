@@ -681,10 +681,6 @@ tableView model rowFilter =
                             else
                                 [ style "background" "white" ]
                            )
-
-                selectOptionWithDefault : String -> String -> String -> Html msg
-                selectOptionWithDefault selection v txt =
-                    option [ value v, selected (txt == selection) ] [ text txt ]
             in
             tr rowStyle
                 [ td [] [ text (toIsoString t.transaction_date) ]
@@ -815,6 +811,11 @@ selectOption o =
     option [] [ text o ]
 
 
+selectOptionWithDefault : String -> String -> String -> Html msg
+selectOptionWithDefault selection v txt =
+    option [ value v, selected (txt == selection) ] [ text txt ]
+
+
 floatInput : String -> FloatField -> (String -> msg) -> Html msg
 floatInput place field msg =
     case field of
@@ -910,7 +911,11 @@ fetchView f =
                 , input [ placeholder "Password", value f.password, onInput FetchEditPassword ] []
                 , intInput "Month" f.month FetchEditMonth
                 , intInput "Year" f.year FetchEditYear
-                , select [ onInput FetchChangeBackend ] (List.map selectOption f.avail_backends)
+                , select [ onInput FetchChangeBackend ]
+                    (List.map2 (selectOptionWithDefault f.selected_backend)
+                        f.avail_backends
+                        f.avail_backends
+                    )
                 , button [ onClick FetchGo ] [ text "Go" ]
                 ]
             ]
