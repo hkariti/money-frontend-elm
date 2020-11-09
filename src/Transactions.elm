@@ -1,10 +1,19 @@
 port module Transactions exposing (Model, Msg, init, update, view)
 
+import Bootstrap.Alert as Alert
+import Bootstrap.Button as Button
+import Bootstrap.CDN as CDN
+import Bootstrap.Form as Form
+import Bootstrap.Form.Input as Input
+import Bootstrap.Form.Select as Select
+import Bootstrap.Spinner as Spinner
+import Bootstrap.Table as Table
+import Bootstrap.Utilities.Spacing as Spacing
 import Date exposing (Date, fromIsoString, toIsoString)
 import DatePicker exposing (defaultSettings)
 import Debug
 import Dict exposing (Dict)
-import Html exposing (Html, button, div, h2, input, option, select, table, td, text, th, tr)
+import Html exposing (Html, button, div, h2, input, option, table, td, text, th, tr)
 import Html.Attributes exposing (..)
 import Html.Events exposing (onClick, onInput)
 import Http
@@ -12,7 +21,9 @@ import Json.Decode as D
 import Json.Decode.Pipeline as Dp
 import Json.Encode as E
 import List.Extra exposing (gatherEqualsBy, gatherWith, getAt, removeAt, setAt)
-import Maybe.Extra exposing (isJust, isNothing, join)
+import Maybe.Extra exposing (cons, isJust, isNothing, join)
+import Svg
+import Svg.Attributes as Svgattr
 import Task
 
 
@@ -85,13 +96,31 @@ type alias FetchModel =
     }
 
 
+type alias Message =
+    { level : Alert.Config Msg -> Alert.Config Msg
+    , text : String
+    , visibility : Alert.Visibility
+    }
+
+
+type TableType
+    = ExpenseTable
+    | IncomeTable
+    | InterTable
+
+
+type EditOp
+    = Exist Int
+    | New TableType
+
+
 type alias Model =
     { transactions : List Transaction
-    , edit : Maybe Int
+    , edit : Maybe EditOp
     , form : TransactionForm
+    , message : Message
     , billDatePicker : DatePicker.DatePicker
     , transactionDatePicker : DatePicker.DatePicker
-    , message : String
     , fetch : FetchModel
     , accounts : List Account
     , categories : List String
@@ -109,7 +138,7 @@ init _ =
       , form = emptyForm
       , billDatePicker = datePicker
       , transactionDatePicker = datePicker
-      , message = ""
+      , message = noMessage
       , fetch = resetFetch
       , accounts = []
       , categories = []
@@ -118,18 +147,24 @@ init _ =
         [ getAccountsCmd
         , getCategoriesCmd
         , Cmd.map (ToDatePicker AllDate) datePickerFx
+        , fetchDateCmd
         ]
     )
 
 
+noMessage : Message
+noMessage =
+    { level = Alert.info, visibility = Alert.closed, text = "" }
+
+
 billDateSettings : DatePicker.Settings
 billDateSettings =
-    { defaultSettings | placeholder = "Bill Date" }
+    { defaultSettings | placeholder = "Bill Date", inputClassList = [ ( "form-control", True ) ] }
 
 
 transactionDateSettings : DatePicker.Settings
 transactionDateSettings =
-    { defaultSettings | placeholder = "Transaction Date" }
+    { defaultSettings | placeholder = "Transaction Date", inputClassList = [ ( "form-control", True ) ] }
 
 
 emptyForm : TransactionForm
@@ -169,7 +204,7 @@ type DatePickerType
 
 
 type Msg
-    = Add
+    = Add TableType
     | Remove Int
     | StartEditRow Int
     | SaveEditRow
@@ -177,7 +212,7 @@ type Msg
     | EditTransAmount String
     | EditBillAmount String
     | EditDescription String
-    | ChangeCategory Int String
+    | ChangeCategory (Maybe Int) String
     | ChangeCurrency Currency
     | ChangeFromAccount String
     | ChangeToAccount String
@@ -185,8 +220,6 @@ type Msg
     | GotTransactions (Result Http.Error (List Transaction))
     | GotAccounts (Result Http.Error (List Account))
     | GotCategories (Result Http.Error (List String))
-    | FetchOpen
-    | FetchClose
     | FetchEditYear String
     | FetchEditMonth String
     | FetchEditUsername String
@@ -197,6 +230,11 @@ type Msg
     | ClickSaveTable (Transaction -> Bool)
     | FinishSaveTable (Transaction -> Bool) (Result Http.Error ())
     | CopyCategories
+    | AlertMsg Alert.Visibility
+
+
+fetchDateCmd =
+    Date.today |> Task.perform FetchGotDate
 
 
 getAccountsCmd =
@@ -232,13 +270,8 @@ update msg model =
             model.fetch
     in
     case msg of
-        Add ->
-            case createTransaction model.form of
-                Just t ->
-                    ( { model | form = emptyForm, transactions = t :: model.transactions }, Cmd.none )
-
-                Nothing ->
-                    ( model, Cmd.none )
+        Add table ->
+            ( { model | form = emptyForm, edit = Just (New table) }, Cmd.none )
 
         Remove index ->
             ( { model | transactions = removeAt index model.transactions }, Cmd.none )
@@ -249,7 +282,7 @@ update msg model =
                     ( model, Cmd.none )
 
                 Just r ->
-                    ( { model | edit = Just n, form = toForm r }, Cmd.none )
+                    ( { model | edit = Just (Exist n), form = toForm r }, Cmd.none )
 
         CancelEditRow ->
             ( { model | edit = Nothing, form = emptyForm }, Cmd.none )
@@ -258,17 +291,28 @@ update msg model =
             case createTransaction model.form of
                 Just t ->
                     case model.edit of
-                        Just i ->
-                            ( { model
-                                | edit = Nothing
-                                , form = emptyForm
-                                , transactions = setAt i t model.transactions
-                              }
-                            , Cmd.none
-                            )
-
                         Nothing ->
                             ( model, Cmd.none )
+
+                        Just e ->
+                            case e of
+                                Exist i ->
+                                    ( { model
+                                        | edit = Nothing
+                                        , form = emptyForm
+                                        , transactions = setAt i t model.transactions
+                                      }
+                                    , Cmd.none
+                                    )
+
+                                New _ ->
+                                    ( { model
+                                        | edit = Nothing
+                                        , form = emptyForm
+                                        , transactions = t :: model.transactions
+                                      }
+                                    , Cmd.none
+                                    )
 
                 Nothing ->
                     ( model, Cmd.none )
@@ -282,30 +326,52 @@ update msg model =
         EditDescription a ->
             ( { model | form = { oldForm | description = a } }, Cmd.none )
 
-        ChangeCategory i a ->
-            if i < 0 then
-                ( { model | form = { oldForm | category = a } }, Cmd.none )
+        ChangeCategory maybe_i a ->
+            case maybe_i of
+                Nothing ->
+                    ( { model | form = { oldForm | category = a } }, Cmd.none )
 
-            else
-                let
-                    oldTrans =
-                        getAt i model.transactions
-                in
-                case oldTrans of
-                    Nothing ->
-                        ( model, Cmd.none )
+                Just i ->
+                    case getAt (Debug.log "asd" i) model.transactions of
+                        Nothing ->
+                            ( model, Cmd.none )
 
-                    Just t ->
-                        ( { model | transactions = setAt i { t | category = a } model.transactions }, Cmd.none )
+                        Just t ->
+                            ( { model | transactions = setAt i { t | category = a } model.transactions }, Cmd.none )
 
         ChangeCurrency c ->
             ( { model | form = { oldForm | currency = c } }, Cmd.none )
 
         ChangeFromAccount acc ->
-            ( { model | form = { oldForm | from_account = acc } }, Cmd.none )
+            ( { model
+                | form =
+                    { oldForm
+                        | from_account =
+                            -- Workaround an apparent bootstrap bug, where an empty string as select value misbehaves
+                            if acc == "_" then
+                                ""
+
+                            else
+                                acc
+                    }
+              }
+            , Cmd.none
+            )
 
         ChangeToAccount acc ->
-            ( { model | form = { oldForm | to_account = acc } }, Cmd.none )
+            ( { model
+                | form =
+                    { oldForm
+                        | to_account =
+                            if acc == "_" then
+                                ""
+
+                            else
+                                acc
+                    }
+              }
+            , Cmd.none
+            )
 
         ToDatePicker pickerType subMsg ->
             let
@@ -357,35 +423,18 @@ update msg model =
                     , Cmd.none
                     )
 
-        --Fetch ->
-        --    ( model
-        --    , Http.get
-        --        { url = "http://localhost:8000/transactions/"
-        --        , expect = Http.expectJson GotTransactions transactionParser
-        --        }
-        --    )
         GotTransactions res ->
             case res of
                 Ok l ->
-                    ( { model | transactions = l ++ model.transactions, message = "Added new entries" }
+                    ( { model | transactions = l ++ model.transactions, message = Message Alert.info "Added new entries" Alert.shown }
                     , Cmd.none
                     )
 
                 Err (Http.BadBody e) ->
-                    ( { model | message = e }, Cmd.none )
+                    ( { model | message = Message Alert.danger e Alert.shown }, Cmd.none )
 
                 Err _ ->
-                    ( { model | message = "Error!" }, Cmd.none )
-
-        FetchClose ->
-            ( { model | fetch = { oldFetch | open = False } }, Cmd.none )
-
-        FetchOpen ->
-            let
-                fetchDateCmd =
-                    Date.today |> Task.perform FetchGotDate
-            in
-            ( { model | fetch = { oldFetch | open = True } }, fetchDateCmd )
+                    ( { model | message = Message Alert.danger "Error!" Alert.shown }, Cmd.none )
 
         FetchEditYear y ->
             ( { model | fetch = { oldFetch | year = IntField (String.toInt y) y } }, Cmd.none )
@@ -412,10 +461,10 @@ update msg model =
                     ( { model | accounts = a, fetch = fetchUpdateBackends oldFetch backends }, Cmd.none )
 
                 Err (Http.BadBody e) ->
-                    ( { model | message = e }, Cmd.none )
+                    ( { model | message = Message Alert.danger e Alert.shown }, Cmd.none )
 
                 Err _ ->
-                    ( { model | message = "Error!" }, Cmd.none )
+                    ( { model | message = Message Alert.danger "Error!" Alert.shown }, Cmd.none )
 
         GotCategories res ->
             case res of
@@ -423,10 +472,10 @@ update msg model =
                     ( { model | categories = a }, Cmd.none )
 
                 Err (Http.BadBody e) ->
-                    ( { model | message = e }, Cmd.none )
+                    ( { model | message = Message Alert.danger e Alert.shown }, Cmd.none )
 
                 Err _ ->
-                    ( { model | message = "Error!" }, Cmd.none )
+                    ( { model | message = Message Alert.danger "Error!" Alert.shown }, Cmd.none )
 
         FetchGotDate d ->
             let
@@ -469,7 +518,7 @@ update msg model =
                                 )
                         }
             in
-            ( { model | message = "Fetching..." }, fetchCmd )
+            ( { model | message = Message Alert.info "Fetching..." Alert.shown }, fetchCmd )
 
         ClickSaveTable table ->
             let
@@ -484,7 +533,7 @@ update msg model =
                             Http.jsonBody (E.list transactionEncoder rows)
                         }
             in
-            ( { model | message = "Saving..." }, fetchCmd )
+            ( { model | message = Message Alert.info "Saving..." Alert.shown }, fetchCmd )
 
         FinishSaveTable table res ->
             let
@@ -493,16 +542,23 @@ update msg model =
             in
             case res of
                 Ok () ->
-                    ( { model | transactions = List.filter inverseTable model.transactions, message = "Saved!" }, Cmd.none )
+                    ( { model | transactions = List.filter inverseTable model.transactions, message = Message Alert.info "Saved!" Alert.shown }, Cmd.none )
 
                 Err (Http.BadBody e) ->
-                    ( { model | message = e }, Cmd.none )
+                    ( { model | message = Message Alert.danger e Alert.shown }, Cmd.none )
 
                 Err _ ->
-                    ( { model | message = "Error!" }, Cmd.none )
+                    ( { model | message = Message Alert.danger "Error!" Alert.shown }, Cmd.none )
 
         CopyCategories ->
             ( model, toClipboard (categoriesToText model.transactions) )
+
+        AlertMsg m ->
+            let
+                oldMessage =
+                    model.message
+            in
+            ( { model | message = { oldMessage | visibility = m } }, Cmd.none )
 
 
 dateDecoder : D.Decoder Date
@@ -609,139 +665,276 @@ categoriesToText =
 -- VIEW
 
 
-view : Model -> Html Msg
-view model =
+bootstrapIcon : String -> Html Msg
+bootstrapIcon name =
+    Svg.svg
+        [ Svgattr.class "bi", Svgattr.fill "currentColor", Svgattr.height "1.5rem", Svgattr.width "1.5rem" ]
+        [ Svg.use [ Svgattr.xlinkHref ("/bootstrap-icons-1.0.0/bootstrap-icons.svg#" ++ name) ] [] ]
+
+
+viewTable : Model -> TableType -> (Transaction -> Bool) -> Html Msg
+viewTable model tt transFilter =
     let
+        entries : List ( Int, Transaction )
+        entries =
+            model.transactions |> List.indexedMap Tuple.pair |> List.filter (Tuple.second >> transFilter)
+
         listAccounts : (String -> Msg) -> String -> Html Msg
         listAccounts onInputMsg selection =
             let
-                emptyAccount : Html Msg
-                emptyAccount =
-                    option [ value "", selected (selection == "") ] [ text "--- Outside ---" ]
-
-                accountOption : Account -> Html Msg
-                accountOption a =
-                    option [ value a.name, selected (a.name == selection) ] [ text a.name ]
+                accountNames =
+                    List.map .name model.accounts
             in
-            select [ onInput onInputMsg ] (emptyAccount :: List.map accountOption model.accounts)
+            Select.select [ Select.onChange onInputMsg ] (List.map2 (selectItemWithDefault selection) ("_" :: accountNames) ("---" :: accountNames))
+
+        displayRow : Int -> Transaction -> Table.Row Msg
+        displayRow i t =
+            Table.tr []
+                [ Table.td [] [ text (toIsoString t.transaction_date) ]
+                , Table.td [] [ text (toIsoString t.bill_date) ]
+                , Table.td [] [ text t.from_account ]
+                , Table.td [] [ text t.to_account ]
+                , Table.td [] [ text (String.fromFloat t.original_amount) ]
+                , Table.td [] [ text (String.fromFloat t.billed_amount) ]
+                , Table.td [] [ text t.currency ]
+                , Table.td [] [ text t.description ]
+                , Table.td []
+                    [ Select.select [ Select.onChange (ChangeCategory (Just i)) ]
+                        (List.map2 (selectItemWithDefault t.category) ("" :: model.categories) ("--" :: model.categories))
+                    ]
+                , Table.td []
+                    [ Button.button
+                        [ Button.outlinePrimary
+                        , Button.attrs [ Spacing.ml1, onClick (StartEditRow i) ]
+                        ]
+                        [ bootstrapIcon "pencil" ]
+                    ]
+                ]
+
+        editableRow : Maybe Int -> Table.Row Msg
+        editableRow maybe_i =
+            let
+                basic_buttons =
+                    [ Button.button
+                        [ Button.outlinePrimary
+                        , Button.attrs
+                            [ onClick SaveEditRow ]
+                        ]
+                        [ bootstrapIcon "check" ]
+                    , Button.button
+                        [ Button.outlinePrimary
+                        , Button.attrs
+                            [ Spacing.ml1
+                            , onClick CancelEditRow
+                            ]
+                        ]
+                        [ bootstrapIcon "x" ]
+                    ]
+
+                remove_button =
+                    maybe_i
+                        |> Maybe.map
+                            (\i ->
+                                [ Button.button
+                                    [ Button.outlinePrimary
+                                    , Button.attrs
+                                        [ Spacing.ml1
+                                        , onClick (Remove i)
+                                        ]
+                                    ]
+                                    [ bootstrapIcon "trash" ]
+                                ]
+                            )
+
+                buttons =
+                    basic_buttons ++ (remove_button |> Maybe.withDefault [])
+            in
+            Table.tr []
+                [ Table.td [] [ DatePicker.view model.form.transaction_date transactionDateSettings model.transactionDatePicker |> Html.map (ToDatePicker TransactionDate) ]
+                , Table.td [] [ DatePicker.view model.form.bill_date billDateSettings model.billDatePicker |> Html.map (ToDatePicker BillDate) ]
+                , Table.td [] [ listAccounts ChangeFromAccount model.form.from_account ]
+                , Table.td [] [ listAccounts ChangeToAccount model.form.to_account ]
+                , Table.td [] [ floatInput "Original Amount" model.form.original_amount EditTransAmount ]
+                , Table.td [] [ floatInput "Billed Amount" model.form.billed_amount EditBillAmount ]
+                , Table.td [] [ Select.select [ Select.onChange ChangeCurrency ] (List.map selectItem currencies) ]
+                , Table.td [] [ Input.text [ Input.placeholder "Description", Input.value model.form.description, Input.onInput EditDescription ] ]
+                , Table.td []
+                    [ Select.select [ Select.onChange (ChangeCategory Nothing) ]
+                        (List.map2 (selectItemWithDefault model.form.category) ("" :: model.categories) ("--" :: model.categories))
+                    ]
+                , Table.td [] buttons
+                ]
+
+        isEditing : Int -> Bool
+        isEditing i =
+            model.edit
+                |> Maybe.map
+                    (\e ->
+                        case e of
+                            Exist j ->
+                                i == j
+
+                            New _ ->
+                                False
+                    )
+                |> Maybe.withDefault False
+
+        addRow : Maybe (Table.Row Msg)
+        addRow =
+            let
+                cmpTableType : EditOp -> Maybe TableType
+                cmpTableType editop =
+                    case editop of
+                        Exist _ ->
+                            Nothing
+
+                        New tt2 ->
+                            if tt2 == tt then
+                                Just tt
+
+                            else
+                                Nothing
+            in
+            model.edit |> Maybe.andThen cmpTableType |> Maybe.map (\_ -> editableRow Nothing)
+
+        toRow : ( Int, Transaction ) -> Table.Row Msg
+        toRow ( i, t ) =
+            if isEditing i then
+                editableRow (Just i)
+
+            else
+                displayRow i t
     in
+    Table.table
+        { options = [ Table.small ]
+        , thead =
+            Table.simpleThead
+                [ Table.th [] [ text "Transaction Date" ]
+                , Table.th [] [ text "Bill Date" ]
+                , Table.th [] [ text "From Account" ]
+                , Table.th [] [ text "To Account" ]
+                , Table.th [] [ text "Transaction Amount" ]
+                , Table.th [] [ text "Billed Amount" ]
+                , Table.th [] [ text "Currency" ]
+                , Table.th [] [ text "Description" ]
+                , Table.th [] [ text "Category" ]
+                ]
+        , tbody = Table.tbody [] (cons addRow (List.map toRow entries))
+        }
+
+
+view : Model -> Html Msg
+view model =
     div []
-        [ div []
-            ([ listAccounts ChangeFromAccount model.form.from_account
-             , listAccounts ChangeToAccount model.form.to_account
-             , DatePicker.view model.form.transaction_date transactionDateSettings model.transactionDatePicker |> Html.map (ToDatePicker TransactionDate)
-             , DatePicker.view model.form.bill_date billDateSettings model.billDatePicker |> Html.map (ToDatePicker BillDate)
-             , floatInput "Original Amount" model.form.original_amount EditTransAmount
-             , floatInput "Billed Amount" model.form.billed_amount EditBillAmount
-             , select [ onInput ChangeCurrency ] (List.map selectOption currencies)
-             , input [ placeholder "Description", value model.form.description, onInput EditDescription ] []
-             , select [ onInput (ChangeCategory -1) ]
-                (option [ value "" ] [ text "--" ] :: List.map selectOption model.categories)
-             ]
-                ++ globalActions model.edit model.fetch
-            )
-        , div [ class "messagebox" ] [ text model.message ]
-        , div []
-            [ h2 []
-                [ text "Income"
-                , button [ style "font-size" "0.5em", onClick (ClickSaveTable incomeFilter) ] [ text "Save & clear" ]
+        [ CDN.stylesheet
+        , Alert.config
+            |> Alert.dismissable AlertMsg
+            |> model.message.level
+            |> Alert.children [ text model.message.text ]
+            |> Alert.view model.message.visibility
+        , fetchView model.fetch
+        , h2 []
+            [ text "Expenses"
+            , Button.button
+                [ Button.outlinePrimary
+                , Button.attrs
+                    [ Spacing.m1
+                    , onClick (Add ExpenseTable)
+                    ]
                 ]
-            , tableView model incomeFilter
-            ]
-        , div []
-            [ h2 []
-                [ text "Expenses"
-                , button [ style "font-size" "0.5em", onClick (ClickSaveTable expenseFilter) ] [ text "Save & clear" ]
+                [ bootstrapIcon "plus" ]
+            , Button.button
+                [ Button.outlinePrimary
+                , Button.attrs
+                    [ Spacing.m1
+                    , onClick (ClickSaveTable expenseFilter)
+                    ]
                 ]
-            , tableView model expenseFilter
+                [ bootstrapIcon "check" ]
             ]
-        , div []
-            [ h2 []
-                [ text "Inter-account transfers"
-                , button [ style "font-size" "0.5em", onClick (ClickSaveTable interFilter) ] [ text "Save & clear" ]
+        , viewTable model ExpenseTable expenseFilter
+        , h2 []
+            [ text "Income"
+            , Button.button
+                [ Button.outlinePrimary
+                , Button.attrs
+                    [ Spacing.m1
+                    , onClick (Add IncomeTable)
+                    ]
                 ]
-            , tableView model interFilter
+                [ bootstrapIcon "plus" ]
+            , Button.button
+                [ Button.outlinePrimary
+                , Button.attrs
+                    [ Spacing.m1
+                    , onClick (ClickSaveTable incomeFilter)
+                    ]
+                ]
+                [ bootstrapIcon "check" ]
             ]
+        , viewTable model IncomeTable incomeFilter
+        , h2 []
+            [ text "Transfers"
+            , Button.button
+                [ Button.outlinePrimary
+                , Button.attrs
+                    [ Spacing.m1
+                    , onClick (Add InterTable)
+                    ]
+                ]
+                [ bootstrapIcon "plus" ]
+            , Button.button
+                [ Button.outlinePrimary
+                , Button.attrs
+                    [ Spacing.m1
+                    , onClick (ClickSaveTable interFilter)
+                    ]
+                ]
+                [ bootstrapIcon "check" ]
+            ]
+        , viewTable model InterTable interFilter
+        , h2 []
+            [ text "Categories Summary"
+            , Button.button
+                [ Button.outlinePrimary
+                , Button.attrs
+                    [ Spacing.m1
+                    , onClick CopyCategories
+                    ]
+                ]
+                [ bootstrapIcon "clipboard" ]
+            ]
+        , categoryTableView model
         , div []
             [ h2 [] [ text "Account summary" ]
             , summaryTableView model
             ]
-        , div []
-            [ h2 []
-                [ text "Category summary"
-                , button [ style "font-size" "0.5em", onClick CopyCategories ] [ text "Copy" ]
-                ]
-            , categoryTableView model
-            ]
         ]
 
 
-tableView : Model -> (Transaction -> Bool) -> Html Msg
-tableView model rowFilter =
-    let
-        entries : List ( Int, Transaction )
-        entries =
-            model.transactions |> List.indexedMap Tuple.pair |> List.filter (Tuple.second >> rowFilter)
 
-        toTableRow : ( Int, Transaction ) -> Html Msg
-        toTableRow ( i, t ) =
-            let
-                rowStyle =
-                    (case Maybe.map ((==) i) model.edit of
-                        Just True ->
-                            [ style "border-style" "solid" ]
-
-                        _ ->
-                            []
-                    )
-                        ++ (if t.from_account == t.to_account then
-                                [ style "background" "red" ]
-
-                            else if String.isEmpty t.from_account then
-                                [ style "background" "lightblue" ]
-
-                            else if String.isEmpty t.to_account then
-                                [ style "background" "pink" ]
-
-                            else
-                                [ style "background" "white" ]
-                           )
-            in
-            tr rowStyle
-                [ td [] [ text (toIsoString t.transaction_date) ]
-                , td [] [ text (toIsoString t.bill_date) ]
-                , td [] [ text t.from_account ]
-                , td [] [ text t.to_account ]
-                , td [] [ text (String.fromFloat t.original_amount) ]
-                , td [] [ text (String.fromFloat t.billed_amount) ]
-                , td [] [ text t.currency ]
-                , td [] [ text t.description ]
-                , td []
-                    [ select [ onInput (ChangeCategory i) ]
-                        (List.map2 (selectOptionWithDefault t.category) ("" :: model.categories) ("--" :: model.categories))
-                    ]
-                , td []
-                    [ button [ onClick (Remove i) ] [ text "Remove" ]
-                    , button [ onClick (StartEditRow i) ] [ text "Edit" ]
-                    ]
-                ]
-    in
-    table [ style "border-collapse" "collapse", style "margin" "5px" ]
-        ([ tr []
-            [ th [] [ text "Transaction Date" ]
-            , th [] [ text "Bill Date" ]
-            , th [] [ text "From Account" ]
-            , th [] [ text "To Account" ]
-            , th [] [ text "Original Amount" ]
-            , th [] [ text "Billed Amount" ]
-            , th [] [ text "Currency" ]
-            , th [] [ text "Description" ]
-            , th [] [ text "Category" ]
-            , th [] [ text "Actions" ]
-            ]
-         ]
-            ++ List.map toTableRow entries
-        )
+--        [ div []
+--            ([ listAccounts ChangeFromAccount model.form.from_account
+--             , listAccounts ChangeToAccount model.form.to_account
+--             , DatePicker.view model.form.transaction_date transactionDateSettings model.transactionDatePicker |> Html.map (ToDatePicker TransactionDate)
+--             , DatePicker.view model.form.bill_date billDateSettings model.billDatePicker |> Html.map (ToDatePicker BillDate)
+--             , floatInput "Original Amount" model.form.original_amount EditTransAmount
+--             , floatInput "Billed Amount" model.form.billed_amount EditBillAmount
+--             , select [ onInput ChangeCurrency ] (List.map selectOption currencies)
+--             , input [ placeholder "Description", value model.form.description, onInput EditDescription ] []
+--             , select [ onInput (ChangeCategory -1) ]
+--                (option [ value "" ] [ text "--" ] :: List.map selectOption model.categories)
+--             ]
+--                ++ globalActions model.edit model.fetch
+--            )
+--        , div [ class "messagebox" ] [ text model.message ]
+--        , div []
+--            [ h2 []
+--                [ text "Income"
+--                , button [ style "font-size" "0.5em", onClick (ClickSaveTable incomeFilter) ] [ text "Save & clear" ]
+--                ]
+--            , tableView model incomeFilter
+--            ]
 
 
 summaryTableView : Model -> Html Msg
@@ -780,77 +973,75 @@ summaryTableView model =
             gatherWith compareAccounts r |> List.map tuple2list |> List.map sumAggregate |> Maybe.Extra.values
 
         tableRow r =
-            tr []
-                [ td [] [ text r.from ]
-                , td [] [ text r.to ]
-                , td [] [ text (r.total |> String.fromFloat) ]
+            Table.tr []
+                [ Table.td [] [ text r.from ]
+                , Table.td [] [ text r.to ]
+                , Table.td [] [ text (r.total |> String.fromFloat) ]
                 ]
     in
-    table [ style "border-collapse" "collapse", style "margin" "5px" ]
-        ([ tr []
-            [ th [] [ text "From Account" ]
-            , th [] [ text "To Account" ]
-            , th [] [ text "Total" ]
+    Table.simpleTable
+        ( Table.simpleThead
+            [ Table.th [] [ text "From Account" ]
+            , Table.th [] [ text "To Account" ]
+            , Table.th [] [ text "Total" ]
             ]
-         ]
-            ++ List.map tableRow (rowsByAccount model.transactions)
+        , Table.tbody [] (List.map tableRow (rowsByAccount model.transactions))
         )
 
 
 categoryTableView : Model -> Html Msg
 categoryTableView model =
     let
-        tableRow : ( String, Float ) -> Html Msg
+        tableRow : ( String, Float ) -> Table.Row Msg
         tableRow ( c, v ) =
-            tr []
-                [ td []
+            Table.tr []
+                [ Table.td []
                     [ if String.isEmpty c then
                         text "--"
 
                       else
                         text c
                     ]
-                , tr [] [ text (String.fromFloat v) ]
+                , Table.td [] [ text (String.fromFloat v) ]
                 ]
     in
-    table [ style "border-collapse" "collapse", style "margin" "5px" ]
-        ([ tr []
-            [ th [] [ text "Category" ]
-            , th [] [ text "Total" ]
+    Table.simpleTable
+        ( Table.simpleThead
+            [ Table.th [] [ text "Category" ]
+            , Table.th [] [ text "Total" ]
             ]
-         ]
-            ++ List.map tableRow (rowsByCategory model.transactions)
+        , Table.tbody [] (List.map tableRow (rowsByCategory model.transactions))
         )
 
 
-selectOption : String -> Html msg
-selectOption o =
-    option [] [ text o ]
+selectItem : String -> Select.Item msg
+selectItem o =
+    Select.item [ value o ] [ text o ]
 
 
-selectOptionWithDefault : String -> String -> String -> Html msg
-selectOptionWithDefault selection v txt =
-    option [ value v, selected (txt == selection) ] [ text txt ]
+selectItemWithDefault : String -> String -> String -> Select.Item msg
+selectItemWithDefault selection v txt =
+    Select.item [ value v, selected (txt == selection) ] [ text txt ]
 
 
 floatInput : String -> FloatField -> (String -> msg) -> Html msg
 floatInput place field msg =
     case field of
         FloatField Nothing s ->
-            input [ placeholder place, value s, onInput msg, style "border-color" "red" ] []
+            Input.text [ Input.placeholder place, Input.value s, Input.onInput msg, Input.danger ]
 
         FloatField _ s ->
-            input [ placeholder place, value s, onInput msg ] []
+            Input.text [ Input.placeholder place, Input.value s, Input.onInput msg ]
 
 
 intInput : String -> IntField -> (String -> msg) -> Html msg
 intInput place field msg =
     case field of
         IntField Nothing s ->
-            input [ placeholder place, value s, onInput msg, style "border-color" "red" ] []
+            Input.text [ Input.placeholder place, Input.value s, Input.onInput msg, Input.danger ]
 
         IntField _ s ->
-            input [ placeholder place, value s, onInput msg ] []
+            Input.text [ Input.placeholder place, Input.value s, Input.onInput msg ]
 
 
 createTransaction : TransactionForm -> Maybe Transaction
@@ -905,37 +1096,21 @@ toForm t =
     }
 
 
-globalActions : Maybe x -> FetchModel -> List (Html Msg)
-globalActions e f =
-    case e of
-        Just _ ->
-            [ button [ onClick SaveEditRow ] [ text "Save" ]
-            , button [ onClick CancelEditRow ] [ text "Cancel" ]
-            ]
-
-        Nothing ->
-            [ button [ onClick Add ] [ text "Add" ] ]
-                ++ fetchView f
-
-
-fetchView : FetchModel -> List (Html Msg)
+fetchView : FetchModel -> Html Msg
 fetchView f =
-    case f.open of
-        True ->
-            [ button [ onClick FetchClose ] [ text "Fetch" ]
-            , div []
-                [ input [ placeholder "Username", value f.username, onInput FetchEditUsername ] []
-                , input [ placeholder "Password", value f.password, onInput FetchEditPassword ] []
-                , intInput "Month" f.month FetchEditMonth
-                , intInput "Year" f.year FetchEditYear
-                , select [ onInput FetchChangeBackend ]
-                    (List.map2 (selectOptionWithDefault f.selected_backend)
-                        f.avail_backends
-                        f.avail_backends
-                    )
-                , button [ onClick FetchGo ] [ text "Go" ]
-                ]
+    div []
+        [ Input.text [ Input.placeholder "Username", Input.value f.username, Input.onInput FetchEditUsername ]
+        , Input.password [ Input.placeholder "Password", Input.value f.password, Input.onInput FetchEditPassword ]
+        , intInput "Month" f.month FetchEditMonth
+        , intInput "Year" f.year FetchEditYear
+        , Select.select [ Select.onChange FetchChangeBackend ]
+            (List.map2 (selectItemWithDefault f.selected_backend)
+                f.avail_backends
+                f.avail_backends
+            )
+        , Button.button
+            [ Button.outlinePrimary
+            , Button.attrs [ Spacing.ml1, onClick FetchGo ]
             ]
-
-        False ->
-            [ button [ onClick FetchOpen ] [ text "Fetch" ] ]
+            [ text "Fetch" ]
+        ]
