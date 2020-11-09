@@ -1,0 +1,21 @@
+<!DOCTYPE HTML>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Main</title>
+  <script src="main.js"></script>
+</head>
+<body>
+  <script>
+      var app = Elm.Main.init();
+      app.ports.toClipboard.subscribe(function(message) {
+          navigator.clipboard.writeText(message).then(function() {
+            /* clipboard successfully set */
+          }, function() {
+            /* clipboard write failed */
+          });
+      });
+
+  </script>
+</body>
+</html>

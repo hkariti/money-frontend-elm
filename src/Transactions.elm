@@ -1,4 +1,4 @@
-module Transactions exposing (Model, Msg, init, update, view)
+port module Transactions exposing (Model, Msg, init, update, view)
 
 import Date exposing (Date, fromIsoString, toIsoString)
 import DatePicker exposing (defaultSettings)
@@ -14,6 +14,9 @@ import Json.Encode as E
 import List.Extra exposing (gatherEqualsBy, gatherWith, getAt, removeAt, setAt)
 import Maybe.Extra exposing (isJust, isNothing, join)
 import Task
+
+
+port toClipboard : String -> Cmd msg
 
 
 
@@ -193,6 +196,7 @@ type Msg
     | FetchGo
     | ClickSaveTable (Transaction -> Bool)
     | FinishSaveTable (Transaction -> Bool) (Result Http.Error ())
+    | CopyCategories
 
 
 getAccountsCmd =
@@ -497,6 +501,9 @@ update msg model =
                 Err _ ->
                     ( { model | message = "Error!" }, Cmd.none )
 
+        CopyCategories ->
+            ( model, toClipboard (categoriesToText model.transactions) )
+
 
 dateDecoder : D.Decoder Date
 dateDecoder =
@@ -583,6 +590,21 @@ interFilter t =
     not (String.isEmpty t.from_account) && not (String.isEmpty t.to_account)
 
 
+rowsByCategory : List Transaction -> List ( String, Float )
+rowsByCategory =
+    let
+        addToCategory : Transaction -> Dict String Float -> Dict String Float
+        addToCategory t d =
+            Dict.update t.category (\v -> Just (Maybe.withDefault 0 v + t.billed_amount)) d
+    in
+    List.filter expenseFilter >> List.foldl addToCategory Dict.empty >> Dict.toList
+
+
+categoriesToText : List Transaction -> String
+categoriesToText =
+    rowsByCategory >> List.map (\( k, v ) -> k ++ ": " ++ String.fromFloat v) >> String.join " "
+
+
 
 -- VIEW
 
@@ -645,7 +667,10 @@ view model =
             , summaryTableView model
             ]
         , div []
-            [ h2 [] [ text "Category summary" ]
+            [ h2 []
+                [ text "Category summary"
+                , button [ style "font-size" "0.5em", onClick CopyCategories ] [ text "Copy" ]
+                ]
             , categoryTableView model
             ]
         ]
@@ -775,10 +800,6 @@ summaryTableView model =
 categoryTableView : Model -> Html Msg
 categoryTableView model =
     let
-        addToCategory : Transaction -> Dict String Float -> Dict String Float
-        addToCategory t d =
-            Dict.update t.category (\v -> Just (Maybe.withDefault 0 v + t.billed_amount)) d
-
         tableRow : ( String, Float ) -> Html Msg
         tableRow ( c, v ) =
             tr []
@@ -791,10 +812,6 @@ categoryTableView model =
                     ]
                 , tr [] [ text (String.fromFloat v) ]
                 ]
-
-        rowsByCategory : List Transaction -> List ( String, Float )
-        rowsByCategory =
-            List.filter expenseFilter >> List.foldl addToCategory Dict.empty >> Dict.toList
     in
     table [ style "border-collapse" "collapse", style "margin" "5px" ]
         ([ tr []
