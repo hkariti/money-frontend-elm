@@ -1098,7 +1098,7 @@ toForm t =
 
 fetchView : FetchModel -> Html Msg
 fetchView f =
-    div []
+    Form.formInline []
         [ Input.text [ Input.placeholder "Username", Input.value f.username, Input.onInput FetchEditUsername ]
         , Input.password [ Input.placeholder "Password", Input.value f.password, Input.onInput FetchEditPassword ]
         , intInput "Month" f.month FetchEditMonth
