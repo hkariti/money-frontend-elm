@@ -661,10 +661,110 @@ categoriesToText =
     rowsByCategory >> List.map (\( k, v ) -> k ++ ": " ++ String.fromFloat v) >> String.join " "
 
 
+createTransaction : TransactionForm -> Maybe Transaction
+createTransaction form =
+    let
+        bill_date =
+            form.bill_date
+
+        transaction_date =
+            form.transaction_date
+
+        (FloatField billed_amount _) =
+            form.billed_amount
+
+        (FloatField original_amount _) =
+            form.original_amount
+
+        oneOrMore : String -> String -> Maybe ( String, String )
+        oneOrMore a b =
+            if String.isEmpty a && String.isEmpty b then
+                Nothing
+
+            else
+                Just ( a, b )
+
+        newTrans bd td ba oa fa_ta =
+            { transaction_date = td
+            , bill_date = bd
+            , billed_amount = ba
+            , original_amount = oa
+            , currency = form.currency
+            , description = form.description
+            , from_account = Tuple.first fa_ta
+            , to_account = Tuple.second fa_ta
+            , category = form.category
+            }
+    in
+    Maybe.map5 newTrans bill_date transaction_date billed_amount original_amount (oneOrMore form.from_account form.to_account)
+
+
+toForm : Transaction -> TransactionForm
+toForm t =
+    { transaction_date = Just t.transaction_date
+    , bill_date = Just t.transaction_date
+    , original_amount = FloatField (Just t.original_amount) (String.fromFloat t.original_amount)
+    , billed_amount = FloatField (Just t.billed_amount) (String.fromFloat t.billed_amount)
+    , currency = t.currency
+    , description = t.description
+    , from_account = t.from_account
+    , to_account = t.to_account
+    , category = t.category
+    }
+
+
 
 -- VIEW
 
 
+selectItem : String -> Select.Item msg
+selectItem o =
+    Select.item [ value o ] [ text o ]
+
+
+selectItemWithDefault : String -> String -> String -> Select.Item msg
+selectItemWithDefault selection v txt =
+    Select.item [ value v, selected (txt == selection) ] [ text txt ]
+
+
+floatInput : String -> FloatField -> (String -> msg) -> Html msg
+floatInput place field msg =
+    case field of
+        FloatField Nothing s ->
+            Input.text [ Input.placeholder place, Input.value s, Input.onInput msg, Input.danger ]
+
+        FloatField _ s ->
+            Input.text [ Input.placeholder place, Input.value s, Input.onInput msg ]
+
+
+intInput : String -> IntField -> (String -> msg) -> Html msg
+intInput place field msg =
+    case field of
+        IntField Nothing s ->
+            Input.text [ Input.placeholder place, Input.value s, Input.onInput msg, Input.danger ]
+
+        IntField _ s ->
+            Input.text [ Input.placeholder place, Input.value s, Input.onInput msg ]
+
+
+fetchView : FetchModel -> Html Msg
+fetchView f =
+    Form.formInline []
+        [ Input.text [ Input.placeholder "Username", Input.value f.username, Input.onInput FetchEditUsername ]
+        , Input.password [ Input.placeholder "Password", Input.value f.password, Input.onInput FetchEditPassword ]
+        , intInput "Month" f.month FetchEditMonth
+        , intInput "Year" f.year FetchEditYear
+        , Select.select [ Select.onChange FetchChangeBackend ]
+            (List.map2 (selectItemWithDefault f.selected_backend)
+                f.avail_backends
+                f.avail_backends
+            )
+        , Button.button
+            [ Button.outlinePrimary
+            , Button.attrs [ Spacing.ml1, onClick FetchGo ]
+            ]
+            [ text "Fetch" ]
+        ]
 
 
 viewTable : Model -> TableType -> (Transaction -> Bool) -> Html Msg
@@ -778,6 +878,83 @@ viewTable model tt transFilter =
         }
 
 
+summaryTableView : Model -> Html Msg
+summaryTableView model =
+    let
+        compareMaybe : Maybe a -> Maybe a -> Bool
+        compareMaybe a b =
+            case ( a, b ) of
+                ( Nothing, Nothing ) ->
+                    True
+
+                ( Just x, Just y ) ->
+                    x == y
+
+                _ ->
+                    False
+
+        compareAccounts : Transaction -> Transaction -> Bool
+        compareAccounts t s =
+            (t.from_account == s.from_account) && (t.to_account == s.to_account)
+
+        sumAggregate : List Transaction -> Maybe { to : String, from : String, total : Float }
+        sumAggregate t =
+            case List.head t of
+                Nothing ->
+                    Nothing
+
+                Just h ->
+                    Just { to = h.to_account, from = h.from_account, total = List.map .billed_amount t |> List.sum }
+
+        tuple2list : ( a, List a ) -> List a
+        tuple2list ( x, y ) =
+            x :: y
+
+        rowsByAccount r =
+            gatherWith compareAccounts r |> List.map tuple2list |> List.map sumAggregate |> Maybe.Extra.values
+
+        tableRow r =
+            Table.tr []
+                [ Table.td [] [ text r.from ]
+                , Table.td [] [ text r.to ]
+                , Table.td [] [ text (r.total |> String.fromFloat) ]
+                ]
+    in
+    Table.simpleTable
+        ( Table.simpleThead
+            [ Table.th [] [ text "From Account" ]
+            , Table.th [] [ text "To Account" ]
+            , Table.th [] [ text "Total" ]
+            ]
+        , Table.tbody [] (List.map tableRow (rowsByAccount model.transactions))
+        )
+
+
+categoryTableView : Model -> Html Msg
+categoryTableView model =
+    let
+        tableRow : ( String, Float ) -> Table.Row Msg
+        tableRow ( c, v ) =
+            Table.tr []
+                [ Table.td []
+                    [ if String.isEmpty c then
+                        text "--"
+
+                      else
+                        text c
+                    ]
+                , Table.td [] [ text (String.fromFloat v) ]
+                ]
+    in
+    Table.simpleTable
+        ( Table.simpleThead
+            [ Table.th [] [ text "Category" ]
+            , Table.th [] [ text "Total" ]
+            ]
+        , Table.tbody [] (List.map tableRow (rowsByCategory model.transactions))
+        )
+
+
 view : Model -> Html Msg
 view model =
     div []
@@ -864,183 +1041,4 @@ view model =
             [ h2 [] [ text "Account summary" ]
             , summaryTableView model
             ]
-        ]
-
-
-summaryTableView : Model -> Html Msg
-summaryTableView model =
-    let
-        compareMaybe : Maybe a -> Maybe a -> Bool
-        compareMaybe a b =
-            case ( a, b ) of
-                ( Nothing, Nothing ) ->
-                    True
-
-                ( Just x, Just y ) ->
-                    x == y
-
-                _ ->
-                    False
-
-        compareAccounts : Transaction -> Transaction -> Bool
-        compareAccounts t s =
-            (t.from_account == s.from_account) && (t.to_account == s.to_account)
-
-        sumAggregate : List Transaction -> Maybe { to : String, from : String, total : Float }
-        sumAggregate t =
-            case List.head t of
-                Nothing ->
-                    Nothing
-
-                Just h ->
-                    Just { to = h.to_account, from = h.from_account, total = List.map .billed_amount t |> List.sum }
-
-        tuple2list : ( a, List a ) -> List a
-        tuple2list ( x, y ) =
-            x :: y
-
-        rowsByAccount r =
-            gatherWith compareAccounts r |> List.map tuple2list |> List.map sumAggregate |> Maybe.Extra.values
-
-        tableRow r =
-            Table.tr []
-                [ Table.td [] [ text r.from ]
-                , Table.td [] [ text r.to ]
-                , Table.td [] [ text (r.total |> String.fromFloat) ]
-                ]
-    in
-    Table.simpleTable
-        ( Table.simpleThead
-            [ Table.th [] [ text "From Account" ]
-            , Table.th [] [ text "To Account" ]
-            , Table.th [] [ text "Total" ]
-            ]
-        , Table.tbody [] (List.map tableRow (rowsByAccount model.transactions))
-        )
-
-
-categoryTableView : Model -> Html Msg
-categoryTableView model =
-    let
-        tableRow : ( String, Float ) -> Table.Row Msg
-        tableRow ( c, v ) =
-            Table.tr []
-                [ Table.td []
-                    [ if String.isEmpty c then
-                        text "--"
-
-                      else
-                        text c
-                    ]
-                , Table.td [] [ text (String.fromFloat v) ]
-                ]
-    in
-    Table.simpleTable
-        ( Table.simpleThead
-            [ Table.th [] [ text "Category" ]
-            , Table.th [] [ text "Total" ]
-            ]
-        , Table.tbody [] (List.map tableRow (rowsByCategory model.transactions))
-        )
-
-
-selectItem : String -> Select.Item msg
-selectItem o =
-    Select.item [ value o ] [ text o ]
-
-
-selectItemWithDefault : String -> String -> String -> Select.Item msg
-selectItemWithDefault selection v txt =
-    Select.item [ value v, selected (txt == selection) ] [ text txt ]
-
-
-floatInput : String -> FloatField -> (String -> msg) -> Html msg
-floatInput place field msg =
-    case field of
-        FloatField Nothing s ->
-            Input.text [ Input.placeholder place, Input.value s, Input.onInput msg, Input.danger ]
-
-        FloatField _ s ->
-            Input.text [ Input.placeholder place, Input.value s, Input.onInput msg ]
-
-
-intInput : String -> IntField -> (String -> msg) -> Html msg
-intInput place field msg =
-    case field of
-        IntField Nothing s ->
-            Input.text [ Input.placeholder place, Input.value s, Input.onInput msg, Input.danger ]
-
-        IntField _ s ->
-            Input.text [ Input.placeholder place, Input.value s, Input.onInput msg ]
-
-
-createTransaction : TransactionForm -> Maybe Transaction
-createTransaction form =
-    let
-        bill_date =
-            form.bill_date
-
-        transaction_date =
-            form.transaction_date
-
-        (FloatField billed_amount _) =
-            form.billed_amount
-
-        (FloatField original_amount _) =
-            form.original_amount
-
-        oneOrMore : String -> String -> Maybe ( String, String )
-        oneOrMore a b =
-            if String.isEmpty a && String.isEmpty b then
-                Nothing
-
-            else
-                Just ( a, b )
-
-        newTrans bd td ba oa fa_ta =
-            { transaction_date = td
-            , bill_date = bd
-            , billed_amount = ba
-            , original_amount = oa
-            , currency = form.currency
-            , description = form.description
-            , from_account = Tuple.first fa_ta
-            , to_account = Tuple.second fa_ta
-            , category = form.category
-            }
-    in
-    Maybe.map5 newTrans bill_date transaction_date billed_amount original_amount (oneOrMore form.from_account form.to_account)
-
-
-toForm : Transaction -> TransactionForm
-toForm t =
-    { transaction_date = Just t.transaction_date
-    , bill_date = Just t.transaction_date
-    , original_amount = FloatField (Just t.original_amount) (String.fromFloat t.original_amount)
-    , billed_amount = FloatField (Just t.billed_amount) (String.fromFloat t.billed_amount)
-    , currency = t.currency
-    , description = t.description
-    , from_account = t.from_account
-    , to_account = t.to_account
-    , category = t.category
-    }
-
-
-fetchView : FetchModel -> Html Msg
-fetchView f =
-    Form.formInline []
-        [ Input.text [ Input.placeholder "Username", Input.value f.username, Input.onInput FetchEditUsername ]
-        , Input.password [ Input.placeholder "Password", Input.value f.password, Input.onInput FetchEditPassword ]
-        , intInput "Month" f.month FetchEditMonth
-        , intInput "Year" f.year FetchEditYear
-        , Select.select [ Select.onChange FetchChangeBackend ]
-            (List.map2 (selectItemWithDefault f.selected_backend)
-                f.avail_backends
-                f.avail_backends
-            )
-        , Button.button
-            [ Button.outlinePrimary
-            , Button.attrs [ Spacing.ml1, onClick FetchGo ]
-            ]
-            [ text "Fetch" ]
         ]
