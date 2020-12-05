@@ -13,6 +13,7 @@ import Date exposing (Date, fromIsoString, toIsoString)
 import DatePicker exposing (defaultSettings)
 import Debug
 import Dict exposing (Dict)
+import EditableTable
 import Html exposing (Html, button, div, h2, input, option, table, td, text, th, tr)
 import Html.Attributes exposing (..)
 import Html.Events exposing (onClick, onInput)
@@ -681,123 +682,76 @@ viewTable model tt transFilter =
             in
             Select.select [ Select.onChange onInputMsg ] (List.map2 (selectItemWithDefault selection) ("_" :: accountNames) ("---" :: accountNames))
 
-        displayRow : Int -> Transaction -> Table.Row Msg
+        displayRow : Int -> Transaction -> List (Table.Cell Msg)
         displayRow i t =
-            Table.tr []
-                [ Table.td [] [ text (toIsoString t.transaction_date) ]
-                , Table.td [] [ text (toIsoString t.bill_date) ]
-                , Table.td [] [ text t.from_account ]
-                , Table.td [] [ text t.to_account ]
-                , Table.td [] [ text (String.fromFloat t.original_amount) ]
-                , Table.td [] [ text (String.fromFloat t.billed_amount) ]
-                , Table.td [] [ text t.currency ]
-                , Table.td [] [ text t.description ]
-                , Table.td []
-                    [ Select.select [ Select.onChange (ChangeCategory (Just i)) ]
-                        (List.map2 (selectItemWithDefault t.category) ("" :: model.categories) ("--" :: model.categories))
-                    ]
-                , Table.td []
-                    [ Button.button
-                        [ Button.outlinePrimary
-                        , Button.attrs [ Spacing.ml1, onClick (StartEditRow i) ]
-                        ]
-                        [ bootstrapIcon "pencil" ]
-                    ]
+            [ Table.td [] [ text (toIsoString t.transaction_date) ]
+            , Table.td [] [ text (toIsoString t.bill_date) ]
+            , Table.td [] [ text t.from_account ]
+            , Table.td [] [ text t.to_account ]
+            , Table.td [] [ text (String.fromFloat t.original_amount) ]
+            , Table.td [] [ text (String.fromFloat t.billed_amount) ]
+            , Table.td [] [ text t.currency ]
+            , Table.td [] [ text t.description ]
+            , Table.td []
+                [ Select.select [ Select.onChange (ChangeCategory (Just i)) ]
+                    (List.map2 (selectItemWithDefault t.category) ("" :: model.categories) ("--" :: model.categories))
                 ]
+            ]
 
-        editableRow : Maybe Int -> Table.Row Msg
+        editableRow : Maybe Int -> List (Table.Cell Msg)
         editableRow maybe_i =
-            let
-                basic_buttons =
-                    [ Button.button
-                        [ Button.outlinePrimary
-                        , Button.attrs
-                            [ onClick SaveEditRow ]
-                        ]
-                        [ bootstrapIcon "check" ]
-                    , Button.button
-                        [ Button.outlinePrimary
-                        , Button.attrs
-                            [ Spacing.ml1
-                            , onClick CancelEditRow
-                            ]
-                        ]
-                        [ bootstrapIcon "x" ]
-                    ]
-
-                remove_button =
-                    maybe_i
-                        |> Maybe.map
-                            (\i ->
-                                [ Button.button
-                                    [ Button.outlinePrimary
-                                    , Button.attrs
-                                        [ Spacing.ml1
-                                        , onClick (Remove i)
-                                        ]
-                                    ]
-                                    [ bootstrapIcon "trash" ]
-                                ]
-                            )
-
-                buttons =
-                    basic_buttons ++ (remove_button |> Maybe.withDefault [])
-            in
-            Table.tr []
-                [ Table.td [] [ DatePicker.view model.form.transaction_date transactionDateSettings model.transactionDatePicker |> Html.map (ToDatePicker TransactionDate) ]
-                , Table.td [] [ DatePicker.view model.form.bill_date billDateSettings model.billDatePicker |> Html.map (ToDatePicker BillDate) ]
-                , Table.td [] [ listAccounts ChangeFromAccount model.form.from_account ]
-                , Table.td [] [ listAccounts ChangeToAccount model.form.to_account ]
-                , Table.td [] [ floatInput "Original Amount" model.form.original_amount EditTransAmount ]
-                , Table.td [] [ floatInput "Billed Amount" model.form.billed_amount EditBillAmount ]
-                , Table.td [] [ Select.select [ Select.onChange ChangeCurrency ] (List.map selectItem currencies) ]
-                , Table.td [] [ Input.text [ Input.placeholder "Description", Input.value model.form.description, Input.onInput EditDescription ] ]
-                , Table.td []
-                    [ Select.select [ Select.onChange (ChangeCategory Nothing) ]
-                        (List.map2 (selectItemWithDefault model.form.category) ("" :: model.categories) ("--" :: model.categories))
-                    ]
-                , Table.td [] buttons
+            [ Table.td [] [ DatePicker.view model.form.transaction_date transactionDateSettings model.transactionDatePicker |> Html.map (ToDatePicker TransactionDate) ]
+            , Table.td [] [ DatePicker.view model.form.bill_date billDateSettings model.billDatePicker |> Html.map (ToDatePicker BillDate) ]
+            , Table.td [] [ listAccounts ChangeFromAccount model.form.from_account ]
+            , Table.td [] [ listAccounts ChangeToAccount model.form.to_account ]
+            , Table.td [] [ floatInput "Original Amount" model.form.original_amount EditTransAmount ]
+            , Table.td [] [ floatInput "Billed Amount" model.form.billed_amount EditBillAmount ]
+            , Table.td [] [ Select.select [ Select.onChange ChangeCurrency ] (List.map selectItem currencies) ]
+            , Table.td [] [ Input.text [ Input.placeholder "Description", Input.value model.form.description, Input.onInput EditDescription ] ]
+            , Table.td []
+                [ Select.select [ Select.onChange (ChangeCategory Nothing) ]
+                    (List.map2 (selectItemWithDefault model.form.category) ("" :: model.categories) ("--" :: model.categories))
                 ]
+            ]
 
-        isEditing : Int -> Bool
-        isEditing i =
-            model.edit
-                |> Maybe.map
-                    (\e ->
-                        case e of
-                            Exist j ->
-                                i == j
+        toEditState : Maybe EditOp -> EditableTable.EditState
+        toEditState maybe_e =
+            case maybe_e of
+                Nothing ->
+                    EditableTable.editNothing
 
-                            New _ ->
-                                False
-                    )
-                |> Maybe.withDefault False
-
-        addRow : Maybe (Table.Row Msg)
-        addRow =
-            let
-                cmpTableType : EditOp -> Maybe TableType
-                cmpTableType editop =
-                    case editop of
-                        Exist _ ->
-                            Nothing
-
+                Just e ->
+                    case e of
                         New tt2 ->
                             if tt2 == tt then
-                                Just tt
+                                EditableTable.newRow
 
                             else
-                                Nothing
-            in
-            model.edit |> Maybe.andThen cmpTableType |> Maybe.map (\_ -> editableRow Nothing)
+                                EditableTable.editNothing
 
-        toRow : ( Int, Transaction ) -> Table.Row Msg
-        toRow ( i, t ) =
-            if isEditing i then
-                editableRow (Just i)
+                        Exist i ->
+                            EditableTable.editRow i
 
-            else
-                displayRow i t
+        tableEventToMessage : EditableTable.TableEvent -> Msg
+        tableEventToMessage te =
+            case te of
+                EditableTable.StartEdit i ->
+                    StartEditRow i
+
+                EditableTable.AcceptEdit ->
+                    SaveEditRow
+
+                EditableTable.CancelEdit ->
+                    CancelEditRow
+
+                EditableTable.RemoveRow i ->
+                    Remove i
+
+                EditableTable.AddRow ->
+                    Add tt
+
+                EditableTable.SaveNewRow ->
+                    SaveEditRow
     in
     Table.table
         { options = [ Table.small ]
@@ -813,7 +767,14 @@ viewTable model tt transFilter =
                 , Table.th [] [ text "Description" ]
                 , Table.th [] [ text "Category" ]
                 ]
-        , tbody = Table.tbody [] (cons addRow (List.map toRow entries))
+        , tbody =
+            Table.tbody []
+                (EditableTable.viewTableRows entries
+                    displayRow
+                    editableRow
+                    tableEventToMessage
+                    (toEditState model.edit)
+                )
         }
 
 
@@ -904,31 +865,6 @@ view model =
             , summaryTableView model
             ]
         ]
-
-
-
---        [ div []
---            ([ listAccounts ChangeFromAccount model.form.from_account
---             , listAccounts ChangeToAccount model.form.to_account
---             , DatePicker.view model.form.transaction_date transactionDateSettings model.transactionDatePicker |> Html.map (ToDatePicker TransactionDate)
---             , DatePicker.view model.form.bill_date billDateSettings model.billDatePicker |> Html.map (ToDatePicker BillDate)
---             , floatInput "Original Amount" model.form.original_amount EditTransAmount
---             , floatInput "Billed Amount" model.form.billed_amount EditBillAmount
---             , select [ onInput ChangeCurrency ] (List.map selectOption currencies)
---             , input [ placeholder "Description", value model.form.description, onInput EditDescription ] []
---             , select [ onInput (ChangeCategory -1) ]
---                (option [ value "" ] [ text "--" ] :: List.map selectOption model.categories)
---             ]
---                ++ globalActions model.edit model.fetch
---            )
---        , div [ class "messagebox" ] [ text model.message ]
---        , div []
---            [ h2 []
---                [ text "Income"
---                , button [ style "font-size" "0.5em", onClick (ClickSaveTable incomeFilter) ] [ text "Save & clear" ]
---                ]
---            , tableView model incomeFilter
---            ]
 
 
 summaryTableView : Model -> Html Msg
