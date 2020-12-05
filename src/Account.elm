@@ -17,8 +17,7 @@ import Json.Decode as D
 import Json.Encode as E
 import List.Extra exposing (getAt, removeAt, setAt)
 import Maybe.Extra as MExtra
-import Svg
-import Svg.Attributes as Svgattr
+import Misc exposing (bootstrapIcon)
 
 
 
@@ -292,13 +291,6 @@ validateForm form =
 
 
 -- VIEW
-
-
-bootstrapIcon : String -> Html Msg
-bootstrapIcon name =
-    Svg.svg
-        [ Svgattr.class "bi", Svgattr.fill "currentColor", Svgattr.height "1.5rem", Svgattr.width "1.5rem" ]
-        [ Svg.use [ Svgattr.xlinkHref ("/bootstrap-icons-1.0.0/bootstrap-icons.svg#" ++ name) ] [] ]
 
 
 view : Model -> Html Msg

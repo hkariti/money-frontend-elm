@@ -22,8 +22,7 @@ import Json.Decode.Pipeline as Dp
 import Json.Encode as E
 import List.Extra exposing (gatherEqualsBy, gatherWith, getAt, removeAt, setAt)
 import Maybe.Extra exposing (cons, isJust, isNothing, join)
-import Svg
-import Svg.Attributes as Svgattr
+import Misc exposing (bootstrapIcon)
 import Task
 
 
@@ -665,11 +664,6 @@ categoriesToText =
 -- VIEW
 
 
-bootstrapIcon : String -> Html Msg
-bootstrapIcon name =
-    Svg.svg
-        [ Svgattr.class "bi", Svgattr.fill "currentColor", Svgattr.height "1.5rem", Svgattr.width "1.5rem" ]
-        [ Svg.use [ Svgattr.xlinkHref ("/bootstrap-icons-1.0.0/bootstrap-icons.svg#" ++ name) ] [] ]
 
 
 viewTable : Model -> TableType -> (Transaction -> Bool) -> Html Msg
