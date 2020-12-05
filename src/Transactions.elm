@@ -127,6 +127,16 @@ type alias Model =
     }
 
 
+type alias ModelTable model =
+    { model
+        | transactions : List Transaction
+        , accounts : List Account
+        , categories : List String
+        , form : TransactionForm
+        , edit : Maybe EditOp
+    }
+
+
 init : () -> ( Model, Cmd Msg )
 init _ =
     let
@@ -767,7 +777,7 @@ fetchView f =
         ]
 
 
-viewTable : Model -> TableType -> (Transaction -> Bool) -> Html Msg
+viewTable : ModelTable Model -> TableType -> (Transaction -> Bool) -> Html Msg
 viewTable model tt transFilter =
     let
         entries : List ( Int, Transaction )
@@ -878,8 +888,8 @@ viewTable model tt transFilter =
         }
 
 
-summaryTableView : Model -> Html Msg
-summaryTableView model =
+summaryTableView : List Transaction -> Html Msg
+summaryTableView transactions =
     let
         compareMaybe : Maybe a -> Maybe a -> Bool
         compareMaybe a b =
@@ -926,12 +936,12 @@ summaryTableView model =
             , Table.th [] [ text "To Account" ]
             , Table.th [] [ text "Total" ]
             ]
-        , Table.tbody [] (List.map tableRow (rowsByAccount model.transactions))
+        , Table.tbody [] (List.map tableRow (rowsByAccount transactions))
         )
 
 
-categoryTableView : Model -> Html Msg
-categoryTableView model =
+categoryTableView : List Transaction -> Html Msg
+categoryTableView transactions =
     let
         tableRow : ( String, Float ) -> Table.Row Msg
         tableRow ( c, v ) =
@@ -951,7 +961,7 @@ categoryTableView model =
             [ Table.th [] [ text "Category" ]
             , Table.th [] [ text "Total" ]
             ]
-        , Table.tbody [] (List.map tableRow (rowsByCategory model.transactions))
+        , Table.tbody [] (List.map tableRow (rowsByCategory transactions))
         )
 
 
@@ -1036,9 +1046,9 @@ view model =
                 ]
                 [ bootstrapIcon "clipboard" ]
             ]
-        , categoryTableView model
+        , categoryTableView model.transactions
         , div []
             [ h2 [] [ text "Account summary" ]
-            , summaryTableView model
+            , summaryTableView model.transactions
             ]
         ]
