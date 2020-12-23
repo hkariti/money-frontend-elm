@@ -1,6 +1,7 @@
 module Main exposing (..)
 
 import Account
+import Bootstrap.Alert as Alert
 import Bootstrap.CDN as CDN
 import Bootstrap.Grid as Grid
 import Bootstrap.Navbar as Navbar
@@ -9,6 +10,7 @@ import Browser.Navigation as Nav
 import Categories
 import Html exposing (..)
 import Html.Attributes exposing (..)
+import Message
 import Transactions
 import Url
 import Url.Parser as UrlParser exposing ((</>), Parser, s, top)
@@ -31,9 +33,13 @@ main =
 
 
 type alias Model =
-    { transactions : Transactions.Model
-    , accounts : Account.Model
-    , categories : Categories.Model
+    { transactions : List Transactions.Transaction
+    , transactionPrivate : Transactions.TransactionPrivate
+    , accounts : List Account.Account
+    , accountPrivate : Account.AccountPrivate
+    , categories : List Categories.Category
+    , categoryPrivate : Categories.CategoryPrivate
+    , message : Message.Model
     , key : Nav.Key
     , navState : Navbar.State
     , page : Page
@@ -51,13 +57,13 @@ type Page
 init : () -> Url.Url -> Nav.Key -> ( Model, Cmd Msg )
 init flags url key =
     let
-        ( transModel, transCmd ) =
+        ( transactionPrivate, transCmd ) =
             Transactions.init ()
 
-        ( accModel, accCmd ) =
+        ( accountPrivate, accCmd ) =
             Account.init ()
 
-        ( catModel, catCmd ) =
+        ( categoryPrivate, catCmd ) =
             Categories.init ()
 
         ( navState, navCmd ) =
@@ -66,7 +72,7 @@ init flags url key =
         page =
             urlUpdate url
     in
-    ( Model transModel accModel catModel key navState page
+    ( Model [] transactionPrivate [] accountPrivate [] categoryPrivate Message.hide key navState page
     , Cmd.batch
         [ Cmd.map ToTransaction transCmd
         , navCmd
@@ -86,6 +92,7 @@ type Msg
     | NavMsg Navbar.State
     | LinkClicked Browser.UrlRequest
     | UrlChanged Url.Url
+    | AlertMessage Alert.Visibility
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -105,29 +112,32 @@ update msg model =
         ToTransaction t ->
             let
                 ( newModel, cmd ) =
-                    Transactions.update t model.transactions
+                    Transactions.update t model
             in
-            ( { model | transactions = newModel }, Cmd.map ToTransaction cmd )
+            ( newModel, Cmd.map ToTransaction cmd )
 
         ToAccount t ->
             let
                 ( newModel, cmd ) =
-                    Account.update t model.accounts
+                    Account.update t model
             in
-            ( { model | accounts = newModel }, Cmd.map ToAccount cmd )
+            ( newModel, Cmd.map ToAccount cmd )
 
         ToCategory t ->
             let
                 ( newModel, cmd ) =
-                    Categories.update t model.categories
+                    Categories.update t model
             in
-            ( { model | categories = newModel }, Cmd.map ToCategory cmd )
+            ( newModel, Cmd.map ToCategory cmd )
 
         MsgNone ->
             ( model, Cmd.none )
 
         NavMsg a ->
             ( { model | navState = a }, Cmd.none )
+
+        AlertMessage v ->
+            ( { model | message = Message.setVisibility model.message v }, Cmd.none )
 
 
 urlUpdate : Url.Url -> Page
@@ -163,6 +173,7 @@ view model =
         [ div []
             [ CDN.stylesheet
             , menu model
+            , Message.view AlertMessage model.message
             , mainContent model
             ]
         ]
@@ -191,10 +202,10 @@ mainContent model =
             text "Home"
 
         TransPage ->
-            Html.map ToTransaction (Transactions.view model.transactions)
+            Html.map ToTransaction (Transactions.view model)
 
         AccountsPage ->
-            Html.map ToAccount (Account.view model.accounts)
+            Html.map ToAccount (Account.view model)
 
         CategoriesPage ->
-            Html.map ToCategory (Categories.view model.categories)
+            Html.map ToCategory (Categories.view model)

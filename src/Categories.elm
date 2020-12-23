@@ -1,4 +1,4 @@
-module Categories exposing (Model, Msg, init, update, view)
+module Categories exposing (Category, CategoryModel, CategoryPrivate, Msg, init, update, view)
 
 import Bootstrap.Alert as Alert
 import Bootstrap.Button as Button
@@ -17,6 +17,7 @@ import Json.Decode as D
 import Json.Encode as E
 import List.Extra exposing (getAt, removeAt, setAt)
 import Maybe.Extra as MExtra
+import Message
 import Misc exposing (bootstrapIcon)
 
 
@@ -35,36 +36,30 @@ type alias CategoryForm =
     }
 
 
-type alias Message =
-    { level : Alert.Config Msg -> Alert.Config Msg
-    , text : String
-    , visibility : Alert.Visibility
-    }
-
-
 type Operation
     = UpdateOp
     | DeleteOp
     | FetchOp
 
 
-type alias Model =
-    { categories : List Category
-    , edit : Maybe Int
+type alias CategoryPrivate =
+    { edit : Maybe Int
     , form : CategoryForm
-    , message : Message
     , currentOp : Maybe Operation
     }
 
 
-init : () -> ( Model, Cmd Msg )
+type alias CategoryModel m =
+    { m
+        | categories : List Category
+        , categoryPrivate : CategoryPrivate
+        , message : Message.Model
+    }
+
+
+init : () -> ( CategoryPrivate, Cmd Msg )
 init _ =
-    ( Model [] Nothing emptyForm noMessage (Just FetchOp), getAccountsCmd )
-
-
-noMessage : Message
-noMessage =
-    { level = Alert.info, visibility = Alert.closed, text = "" }
+    ( CategoryPrivate Nothing emptyForm (Just FetchOp), getAccountsCmd )
 
 
 emptyForm : CategoryForm
@@ -144,70 +139,123 @@ type Msg
     | EditTitle String
     | AcceptEdit
     | CancelEdit
-    | AlertMsg Alert.Visibility
 
 
-update : Msg -> Model -> ( Model, Cmd Msg )
+updateFromResult : CategoryModel m -> Result Http.Error a -> (a -> ( CategoryModel m, Cmd Msg )) -> ( CategoryModel m, Cmd Msg )
+updateFromResult model res f =
+    let
+        oldPrivate =
+            model.categoryPrivate
+    in
+    case res of
+        Ok a ->
+            f a
+
+        Err (Http.BadBody e) ->
+            ( { model | message = Message.danger e, categoryPrivate = { oldPrivate | currentOp = Nothing } }, Cmd.none )
+
+        Err _ ->
+            ( { model
+                | message = Message.danger "Error!"
+                , categoryPrivate =
+                    { oldPrivate
+                        | currentOp = Nothing
+                    }
+              }
+            , Cmd.none
+            )
+
+
+type alias PrivateOp m =
+    { m | currentOp : Maybe Operation }
+
+
+type alias PrivateEdit m =
+    { m | edit : Maybe Int }
+
+
+type alias PrivateForm m =
+    { m | form : CategoryForm }
+
+
+update : Msg -> CategoryModel m -> ( CategoryModel m, Cmd Msg )
 update msg model =
     let
         oldForm =
-            model.form
+            model.categoryPrivate.form
+
+        updateOp : Maybe Operation -> PrivateOp CategoryPrivate -> PrivateOp CategoryPrivate
+        updateOp o p =
+            { p | currentOp = o }
+
+        updateEdit : Maybe Int -> PrivateEdit CategoryPrivate -> PrivateEdit CategoryPrivate
+        updateEdit o p =
+            { p | edit = o }
+
+        updateForm : CategoryForm -> PrivateForm CategoryPrivate -> PrivateForm CategoryPrivate
+        updateForm o p =
+            { p | form = o }
     in
     case msg of
         GotCategories res ->
-            case res of
-                Ok a ->
-                    ( { model | categories = a, currentOp = Nothing }, Cmd.none )
-
-                Err (Http.BadBody e) ->
-                    ( { model | message = Message Alert.danger e Alert.shown, currentOp = Nothing }, Cmd.none )
-
-                Err _ ->
-                    ( { model | message = Message Alert.danger "Error!" Alert.shown, currentOp = Nothing }, Cmd.none )
+            (\a -> ( { model | categories = a, categoryPrivate = model.categoryPrivate |> updateOp Nothing }, Cmd.none ))
+                |> updateFromResult model res
 
         GotResponseAdd res ->
-            case res of
-                Ok a ->
-                    ( { model | message = Message Alert.info "Added account" Alert.shown, categories = a :: model.categories, currentOp = Nothing, edit = Nothing }, Cmd.none )
-
-                Err (Http.BadBody e) ->
-                    ( { model | message = Message Alert.danger e Alert.shown, currentOp = Nothing }, Cmd.none )
-
-                Err _ ->
-                    ( { model | message = Message Alert.danger "Error!" Alert.shown, currentOp = Nothing }, Cmd.none )
+            (\a ->
+                ( { model
+                    | message = Message.info "Added account"
+                    , categories = a :: model.categories
+                    , categoryPrivate = model.categoryPrivate |> updateOp Nothing |> updateEdit Nothing
+                  }
+                , Cmd.none
+                )
+            )
+                |> updateFromResult model res
 
         GotResponseDelete res ->
-            case ( res, model.edit ) of
-                ( _, Nothing ) ->
+            case model.categoryPrivate.edit of
+                Nothing ->
                     ( model, Cmd.none )
 
-                ( Ok (), Just i ) ->
-                    ( { model | message = Message Alert.info "Deleted account" Alert.shown, categories = removeAt i model.categories, currentOp = Nothing, edit = Nothing }, Cmd.none )
-
-                ( Err _, Just i ) ->
-                    ( { model | message = Message Alert.danger "Error!" Alert.shown, currentOp = Nothing }, Cmd.none )
+                Just i ->
+                    (\_ ->
+                        ( { model
+                            | message = Message.info "Deleted account"
+                            , categories = removeAt i model.categories
+                            , categoryPrivate = model.categoryPrivate |> updateOp Nothing |> updateEdit Nothing
+                          }
+                        , Cmd.none
+                        )
+                    )
+                        |> updateFromResult model res
 
         GotResponseUpdate res ->
-            case ( res, model.edit ) of
-                ( _, Nothing ) ->
+            case model.categoryPrivate.edit of
+                Nothing ->
                     ( model, Cmd.none )
 
-                ( Ok a, Just i ) ->
-                    ( { model | message = Message Alert.info "Updated account" Alert.shown, categories = setAt i a model.categories, currentOp = Nothing, edit = Nothing }, Cmd.none )
-
-                ( Err (Http.BadBody e), Just i ) ->
-                    ( { model | message = Message Alert.danger e Alert.shown, currentOp = Nothing }, Cmd.none )
-
-                ( Err _, Just i ) ->
-                    ( { model | message = Message Alert.danger "Error!" Alert.shown, currentOp = Nothing }, Cmd.none )
+                Just i ->
+                    (\a ->
+                        ( { model
+                            | message = Message.info "Updated account"
+                            , categories = setAt i a model.categories
+                            , categoryPrivate = model.categoryPrivate |> updateOp Nothing |> updateEdit Nothing
+                          }
+                        , Cmd.none
+                        )
+                    )
+                        |> updateFromResult model res
 
         Add ->
-            ( { model | form = emptyForm, edit = Just -1 }, Cmd.none )
+            ( { model | categoryPrivate = model.categoryPrivate |> updateForm emptyForm |> updateEdit (Just -1) }, Cmd.none )
 
         Remove i ->
             case getAt i model.categories of
                 Just category ->
-                    ( { model | currentOp = Just DeleteOp }, delCategoryCmd category.id )
+                    ( { model | categoryPrivate = model.categoryPrivate |> updateOp (Just DeleteOp) }
+                    , delCategoryCmd category.id
+                    )
 
                 Nothing ->
                     ( model, Cmd.none )
@@ -220,44 +268,55 @@ update msg model =
             in
             case entry of
                 Just e ->
-                    ( { model | edit = Just i, form = CategoryForm e.title }, Cmd.none )
+                    ( { model
+                        | categoryPrivate =
+                            model.categoryPrivate
+                                |> updateEdit (Just i)
+                                |> updateForm (CategoryForm e.title)
+                      }
+                    , Cmd.none
+                    )
 
                 Nothing ->
                     ( model, Cmd.none )
 
         EditTitle v ->
-            ( { model | form = { oldForm | title = v } }, Cmd.none )
+            ( { model | categoryPrivate = model.categoryPrivate |> updateForm { oldForm | title = v } }, Cmd.none )
 
         AcceptEdit ->
-            case model.edit of
+            case model.categoryPrivate.edit of
                 Nothing ->
                     ( model, Cmd.none )
 
                 Just i ->
-                    if not (validateForm model.form) then
+                    if not (validateForm model.categoryPrivate.form) then
                         ( model, Cmd.none )
 
                     else if i == -1 then
                         -- New row
-                        ( { model | currentOp = Just UpdateOp }, addCategoryCmd model.form )
+                        ( { model | categoryPrivate = model.categoryPrivate |> updateOp (Just UpdateOp) }
+                        , addCategoryCmd model.categoryPrivate.form
+                        )
 
                     else
                         case getAt i model.categories of
                             Nothing ->
-                                ( { model | form = emptyForm, edit = Nothing }, Cmd.none )
+                                ( { model
+                                    | categoryPrivate =
+                                        model.categoryPrivate
+                                            |> updateForm emptyForm
+                                            |> updateEdit Nothing
+                                  }
+                                , Cmd.none
+                                )
 
                             Just currentEntry ->
-                                ( { model | currentOp = Just UpdateOp }, updateCategoryCmd currentEntry.id model.form )
+                                ( { model | categoryPrivate = model.categoryPrivate |> updateOp (Just UpdateOp) }
+                                , updateCategoryCmd currentEntry.id model.categoryPrivate.form
+                                )
 
         CancelEdit ->
-            ( { model | form = emptyForm, edit = Nothing }, Cmd.none )
-
-        AlertMsg m ->
-            let
-                oldMessage =
-                    model.message
-            in
-            ( { model | message = { oldMessage | visibility = m } }, Cmd.none )
+            ( { model | categoryPrivate = model.categoryPrivate |> updateForm emptyForm |> updateEdit Nothing }, Cmd.none )
 
 
 validateForm : CategoryForm -> Bool
@@ -277,16 +336,16 @@ validateForm form =
 -- VIEW
 
 
-view : Model -> Html Msg
+view : CategoryModel m -> Html Msg
 view model =
     let
         isEditing : Int -> Maybe Int
         isEditing i =
-            MExtra.filter ((==) i) model.edit
+            MExtra.filter ((==) i) model.categoryPrivate.edit
 
         spinnerIfOp : Operation -> Html msg -> Html msg
         spinnerIfOp o e =
-            MExtra.filter ((==) o) model.currentOp
+            MExtra.filter ((==) o) model.categoryPrivate.currentOp
                 |> Maybe.map
                     (\_ ->
                         Button.button [ Button.outlinePrimary, Button.attrs [] ]
@@ -308,13 +367,21 @@ view model =
                             ""
                         )
                     ]
-                , Table.td [] [ Input.text [ Input.attrs [ value model.form.title, onInput EditTitle, disabled (MExtra.isJust model.currentOp) ] ] ]
+                , Table.td []
+                    [ Input.text
+                        [ Input.attrs
+                            [ value model.categoryPrivate.form.title
+                            , onInput EditTitle
+                            , disabled (MExtra.isJust model.categoryPrivate.currentOp)
+                            ]
+                        ]
+                    ]
                 , Table.td []
                     [ spinnerIfOp UpdateOp
                         (Button.button
                             [ Button.outlinePrimary
                             , Button.attrs
-                                [ disabled (MExtra.isJust model.currentOp)
+                                [ disabled (MExtra.isJust model.categoryPrivate.currentOp)
                                 , onClick AcceptEdit
                                 ]
                             ]
@@ -325,7 +392,7 @@ view model =
                         , Button.attrs
                             [ Spacing.ml1
                             , onClick CancelEdit
-                            , disabled (MExtra.isJust model.currentOp)
+                            , disabled (MExtra.isJust model.categoryPrivate.currentOp)
                             ]
                         ]
                         [ bootstrapIcon "x" ]
@@ -335,7 +402,7 @@ view model =
                             , Button.attrs
                                 [ Spacing.ml1
                                 , onClick (Remove i)
-                                , disabled (MExtra.isJust model.currentOp)
+                                , disabled (MExtra.isJust model.categoryPrivate.currentOp)
                                 ]
                             ]
                             [ bootstrapIcon "trash" ]
@@ -351,7 +418,7 @@ view model =
                 , Table.td []
                     [ Button.button
                         [ Button.outlinePrimary
-                        , Button.attrs [ disabled (MExtra.isJust model.currentOp), Spacing.ml1, onClick (Edit i) ]
+                        , Button.attrs [ disabled (MExtra.isJust model.categoryPrivate.currentOp), Spacing.ml1, onClick (Edit i) ]
                         ]
                         [ bootstrapIcon "pencil" ]
                     ]
@@ -367,17 +434,12 @@ view model =
     in
     div []
         [ CDN.stylesheet
-        , Alert.config
-            |> Alert.dismissable AlertMsg
-            |> model.message.level
-            |> Alert.children [ text model.message.text ]
-            |> Alert.view model.message.visibility
         , Button.button
             [ Button.outlinePrimary
             , Button.attrs
                 [ Spacing.m1
                 , onClick Add
-                , disabled (MExtra.isJust model.currentOp)
+                , disabled (MExtra.isJust model.categoryPrivate.currentOp)
                 ]
             ]
             [ bootstrapIcon "plus" ]

@@ -1,4 +1,4 @@
-module Account exposing (Model, Msg, init, update, view)
+module Account exposing (Account, AccountModel, AccountPrivate, Msg, init, update, view)
 
 import Bootstrap.Alert as Alert
 import Bootstrap.Button as Button
@@ -17,6 +17,7 @@ import Json.Decode as D
 import Json.Encode as E
 import List.Extra exposing (getAt, removeAt, setAt)
 import Maybe.Extra as MExtra
+import Message
 import Misc exposing (bootstrapIcon)
 
 
@@ -39,36 +40,30 @@ type alias AccountForm =
     }
 
 
-type alias Message =
-    { level : Alert.Config Msg -> Alert.Config Msg
-    , text : String
-    , visibility : Alert.Visibility
-    }
-
-
 type Operation
     = UpdateOp
     | DeleteOp
     | FetchOp
 
 
-type alias Model =
-    { accounts : List Account
-    , edit : Maybe Int
+type alias AccountPrivate =
+    { edit : Maybe Int
     , form : AccountForm
-    , message : Message
     , currentOp : Maybe Operation
     }
 
 
-init : () -> ( Model, Cmd Msg )
+type alias AccountModel m =
+    { m
+        | accounts : List Account
+        , accountPrivate : AccountPrivate
+        , message : Message.Model
+    }
+
+
+init : () -> ( AccountPrivate, Cmd Msg )
 init _ =
-    ( Model [] Nothing emptyForm noMessage (Just FetchOp), getAccountsCmd )
-
-
-noMessage : Message
-noMessage =
-    { level = Alert.info, visibility = Alert.closed, text = "" }
+    ( AccountPrivate Nothing emptyForm (Just FetchOp), getAccountsCmd )
 
 
 emptyForm : AccountForm
@@ -154,70 +149,101 @@ type Msg
     | EditBackendType String
     | AcceptEdit
     | CancelEdit
-    | AlertMsg Alert.Visibility
 
 
-update : Msg -> Model -> ( Model, Cmd Msg )
+updateFromResult : AccountModel m -> Result Http.Error a -> (a -> ( AccountModel m, Cmd Msg )) -> ( AccountModel m, Cmd Msg )
+updateFromResult model res f =
+    let
+        oldPrivate =
+            model.accountPrivate
+    in
+    case res of
+        Ok a ->
+            f a
+
+        Err (Http.BadBody e) ->
+            ( { model | message = Message.danger e, accountPrivate = { oldPrivate | currentOp = Nothing } }, Cmd.none )
+
+        Err _ ->
+            ( { model
+                | message = Message.danger "Error!"
+                , accountPrivate =
+                    { oldPrivate
+                        | currentOp = Nothing
+                    }
+              }
+            , Cmd.none
+            )
+
+
+update : Msg -> AccountModel m -> ( AccountModel m, Cmd Msg )
 update msg model =
     let
+        oldPrivate =
+            model.accountPrivate
+
         oldForm =
-            model.form
+            oldPrivate.form
     in
     case msg of
         GotAccounts res ->
-            case res of
-                Ok a ->
-                    ( { model | accounts = a, currentOp = Nothing }, Cmd.none )
-
-                Err (Http.BadBody e) ->
-                    ( { model | message = Message Alert.danger e Alert.shown, currentOp = Nothing }, Cmd.none )
-
-                Err _ ->
-                    ( { model | message = Message Alert.danger "Error!" Alert.shown, currentOp = Nothing }, Cmd.none )
+            (\a -> ( { model | accounts = a, accountPrivate = { oldPrivate | currentOp = Nothing } }, Cmd.none ))
+                |> updateFromResult model res
 
         GotResponseAdd res ->
-            case res of
-                Ok a ->
-                    ( { model | message = Message Alert.info "Added account" Alert.shown, accounts = a :: model.accounts, currentOp = Nothing, edit = Nothing }, Cmd.none )
-
-                Err (Http.BadBody e) ->
-                    ( { model | message = Message Alert.danger e Alert.shown, currentOp = Nothing }, Cmd.none )
-
-                Err _ ->
-                    ( { model | message = Message Alert.danger "Error!" Alert.shown, currentOp = Nothing }, Cmd.none )
+            (\a ->
+                ( { model
+                    | message = Message.info "Added account"
+                    , accounts = a :: model.accounts
+                    , accountPrivate = { oldPrivate | currentOp = Nothing, edit = Nothing }
+                  }
+                , Cmd.none
+                )
+            )
+                |> updateFromResult model res
 
         GotResponseDelete res ->
-            case ( res, model.edit ) of
-                ( _, Nothing ) ->
+            case model.accountPrivate.edit of
+                Nothing ->
                     ( model, Cmd.none )
 
-                ( Ok (), Just i ) ->
-                    ( { model | message = Message Alert.info "Deleted account" Alert.shown, accounts = removeAt i model.accounts, currentOp = Nothing, edit = Nothing }, Cmd.none )
-
-                ( Err _, Just i ) ->
-                    ( { model | message = Message Alert.danger "Error!" Alert.shown, currentOp = Nothing }, Cmd.none )
+                Just i ->
+                    (\_ ->
+                        ( { model
+                            | message = Message.info "Deleted account"
+                            , accounts = removeAt i model.accounts
+                            , accountPrivate = { oldPrivate | currentOp = Nothing, edit = Nothing }
+                          }
+                        , Cmd.none
+                        )
+                    )
+                        |> updateFromResult model res
 
         GotResponseUpdate res ->
-            case ( res, model.edit ) of
-                ( _, Nothing ) ->
+            case model.accountPrivate.edit of
+                Nothing ->
                     ( model, Cmd.none )
 
-                ( Ok a, Just i ) ->
-                    ( { model | message = Message Alert.info "Updated account" Alert.shown, accounts = setAt i a model.accounts, currentOp = Nothing, edit = Nothing }, Cmd.none )
-
-                ( Err (Http.BadBody e), Just i ) ->
-                    ( { model | message = Message Alert.danger e Alert.shown, currentOp = Nothing }, Cmd.none )
-
-                ( Err _, Just i ) ->
-                    ( { model | message = Message Alert.danger "Error!" Alert.shown, currentOp = Nothing }, Cmd.none )
+                Just i ->
+                    (\a ->
+                        ( { model
+                            | message = Message.info "Updated account"
+                            , accounts = setAt i a model.accounts
+                            , accountPrivate =
+                                { oldPrivate | currentOp = Nothing, edit = Nothing }
+                          }
+                        , Cmd.none
+                        )
+                    )
+                        |> updateFromResult model res
 
         Add ->
-            ( { model | form = emptyForm, edit = Just -1 }, Cmd.none )
+            ( { model | accountPrivate = { oldPrivate | form = emptyForm, edit = Just -1 } }, Cmd.none )
 
         Remove i ->
             case getAt i model.accounts of
                 Just account ->
-                    ( { model | currentOp = Just DeleteOp }, delAccountCmd account.id )
+                    ( { model | accountPrivate = { oldPrivate | currentOp = Just DeleteOp } }, delAccountCmd account.id )
 
                 Nothing ->
                     ( model, Cmd.none )
@@ -230,50 +256,52 @@ update msg model =
             in
             case entry of
                 Just e ->
-                    ( { model | edit = Just i, form = AccountForm e.name e.backend_id e.backend_type }, Cmd.none )
+                    ( { model
+                        | accountPrivate =
+                            { oldPrivate | edit = Just i, form = AccountForm e.name e.backend_id e.backend_type }
+                      }
+                    , Cmd.none
+                    )
 
                 Nothing ->
                     ( model, Cmd.none )
 
         EditName v ->
-            ( { model | form = { oldForm | name = v } }, Cmd.none )
+            ( { model | accountPrivate = { oldPrivate | form = { oldForm | name = v } } }, Cmd.none )
 
         EditBackendId v ->
-            ( { model | form = { oldForm | backend_id = v } }, Cmd.none )
+            ( { model | accountPrivate = { oldPrivate | form = { oldForm | backend_id = v } } }, Cmd.none )
 
         EditBackendType v ->
-            ( { model | form = { oldForm | backend_type = v } }, Cmd.none )
+            ( { model | accountPrivate = { oldPrivate | form = { oldForm | backend_type = v } } }, Cmd.none )
 
         AcceptEdit ->
-            case model.edit of
+            case model.accountPrivate.edit of
                 Nothing ->
                     ( model, Cmd.none )
 
                 Just i ->
-                    if not (validateForm model.form) then
+                    if not (validateForm model.accountPrivate.form) then
                         ( model, Cmd.none )
 
                     else if i == -1 then
                         -- New row
-                        ( { model | currentOp = Just UpdateOp }, addAccountCmd model.form )
+                        ( { model | accountPrivate = { oldPrivate | currentOp = Just UpdateOp } }
+                        , addAccountCmd model.accountPrivate.form
+                        )
 
                     else
                         case getAt i model.accounts of
                             Nothing ->
-                                ( { model | form = emptyForm, edit = Nothing }, Cmd.none )
+                                ( { model | accountPrivate = { oldPrivate | form = emptyForm, edit = Nothing } }, Cmd.none )
 
                             Just currentEntry ->
-                                ( { model | currentOp = Just UpdateOp }, updateAccountCmd currentEntry.id model.form )
+                                ( { model | accountPrivate = { oldPrivate | currentOp = Just UpdateOp } }
+                                , updateAccountCmd currentEntry.id model.accountPrivate.form
+                                )
 
         CancelEdit ->
-            ( { model | form = emptyForm, edit = Nothing }, Cmd.none )
-
-        AlertMsg m ->
-            let
-                oldMessage =
-                    model.message
-            in
-            ( { model | message = { oldMessage | visibility = m } }, Cmd.none )
+            ( { model | accountPrivate = { oldPrivate | form = emptyForm, edit = Nothing } }, Cmd.none )
 
 
 validateForm : AccountForm -> Bool
@@ -293,16 +321,16 @@ validateForm form =
 -- VIEW
 
 
-view : Model -> Html Msg
+view : AccountModel m -> Html Msg
 view model =
     let
         isEditing : Int -> Maybe Int
         isEditing i =
-            MExtra.filter ((==) i) model.edit
+            MExtra.filter ((==) i) model.accountPrivate.edit
 
         spinnerIfOp : Operation -> Html msg -> Html msg
         spinnerIfOp o e =
-            MExtra.filter ((==) o) model.currentOp
+            MExtra.filter ((==) o) model.accountPrivate.currentOp
                 |> Maybe.map
                     (\_ ->
                         Button.button [ Button.outlinePrimary, Button.attrs [] ]
@@ -324,15 +352,39 @@ view model =
                             ""
                         )
                     ]
-                , Table.td [] [ Input.text [ Input.attrs [ value model.form.name, onInput EditName, disabled (MExtra.isJust model.currentOp) ] ] ]
-                , Table.td [] [ Input.text [ Input.attrs [ value model.form.backend_type, onInput EditBackendType, disabled (MExtra.isJust model.currentOp) ] ] ]
-                , Table.td [] [ Input.text [ Input.attrs [ value model.form.backend_id, onInput EditBackendId, disabled (MExtra.isJust model.currentOp) ] ] ]
+                , Table.td []
+                    [ Input.text
+                        [ Input.attrs
+                            [ value model.accountPrivate.form.name
+                            , onInput EditName
+                            , disabled (MExtra.isJust model.accountPrivate.currentOp)
+                            ]
+                        ]
+                    ]
+                , Table.td []
+                    [ Input.text
+                        [ Input.attrs
+                            [ value model.accountPrivate.form.backend_type
+                            , onInput EditBackendType
+                            , disabled (MExtra.isJust model.accountPrivate.currentOp)
+                            ]
+                        ]
+                    ]
+                , Table.td []
+                    [ Input.text
+                        [ Input.attrs
+                            [ value model.accountPrivate.form.backend_id
+                            , onInput EditBackendId
+                            , disabled (MExtra.isJust model.accountPrivate.currentOp)
+                            ]
+                        ]
+                    ]
                 , Table.td []
                     [ spinnerIfOp UpdateOp
                         (Button.button
                             [ Button.outlinePrimary
                             , Button.attrs
-                                [ disabled (MExtra.isJust model.currentOp)
+                                [ disabled (MExtra.isJust model.accountPrivate.currentOp)
                                 , onClick AcceptEdit
                                 ]
                             ]
@@ -343,7 +395,7 @@ view model =
                         , Button.attrs
                             [ Spacing.ml1
                             , onClick CancelEdit
-                            , disabled (MExtra.isJust model.currentOp)
+                            , disabled (MExtra.isJust model.accountPrivate.currentOp)
                             ]
                         ]
                         [ bootstrapIcon "x" ]
@@ -353,7 +405,7 @@ view model =
                             , Button.attrs
                                 [ Spacing.ml1
                                 , onClick (Remove i)
-                                , disabled (MExtra.isJust model.currentOp)
+                                , disabled (MExtra.isJust model.accountPrivate.currentOp)
                                 ]
                             ]
                             [ bootstrapIcon "trash" ]
@@ -371,7 +423,7 @@ view model =
                 , Table.td []
                     [ Button.button
                         [ Button.outlinePrimary
-                        , Button.attrs [ disabled (MExtra.isJust model.currentOp), Spacing.ml1, onClick (Edit i) ]
+                        , Button.attrs [ disabled (MExtra.isJust model.accountPrivate.currentOp), Spacing.ml1, onClick (Edit i) ]
                         ]
                         [ bootstrapIcon "pencil" ]
                     ]
@@ -387,17 +439,12 @@ view model =
     in
     div []
         [ CDN.stylesheet
-        , Alert.config
-            |> Alert.dismissable AlertMsg
-            |> model.message.level
-            |> Alert.children [ text model.message.text ]
-            |> Alert.view model.message.visibility
         , Button.button
             [ Button.outlinePrimary
             , Button.attrs
                 [ Spacing.m1
                 , onClick Add
-                , disabled (MExtra.isJust model.currentOp)
+                , disabled (MExtra.isJust model.accountPrivate.currentOp)
                 ]
             ]
             [ bootstrapIcon "plus" ]

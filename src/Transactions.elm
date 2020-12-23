@@ -1,6 +1,6 @@
-port module Transactions exposing (Model, Msg, init, update, view)
+port module Transactions exposing (Msg, Transaction, TransactionPrivate, init, update, view)
 
-import Bootstrap.Alert as Alert
+import Account exposing (Account)
 import Bootstrap.Button as Button
 import Bootstrap.CDN as CDN
 import Bootstrap.Form as Form
@@ -9,6 +9,7 @@ import Bootstrap.Form.Select as Select
 import Bootstrap.Spinner as Spinner
 import Bootstrap.Table as Table
 import Bootstrap.Utilities.Spacing as Spacing
+import Categories exposing (Category)
 import Date exposing (Date, fromIsoString, toIsoString)
 import DatePicker exposing (defaultSettings)
 import Debug
@@ -21,8 +22,9 @@ import Http
 import Json.Decode as D
 import Json.Decode.Pipeline as Dp
 import Json.Encode as E
-import List.Extra exposing (gatherEqualsBy, gatherWith, getAt, removeAt, setAt)
+import List.Extra exposing (gatherEqualsBy, gatherWith, getAt, removeAt, setAt, unique)
 import Maybe.Extra exposing (cons, isJust, isNothing, join)
+import Message
 import Misc exposing (bootstrapIcon)
 import Task
 
@@ -56,14 +58,6 @@ type alias Transaction =
     }
 
 
-type alias Account =
-    { id : Int
-    , name : String
-    , backend_id : String
-    , backend_type : String
-    }
-
-
 type FloatField
     = FloatField (Maybe Float) String
 
@@ -92,14 +86,6 @@ type alias FetchModel =
     , username : String
     , password : String
     , open : Bool
-    , avail_backends : List String
-    }
-
-
-type alias Message =
-    { level : Alert.Config Msg -> Alert.Config Msg
-    , text : String
-    , visibility : Alert.Visibility
     }
 
 
@@ -114,16 +100,22 @@ type EditOp
     | New TableType
 
 
-type alias Model =
-    { transactions : List Transaction
-    , edit : Maybe EditOp
+type alias TransactionPrivate =
+    { edit : Maybe EditOp
     , form : TransactionForm
-    , message : Message
     , billDatePicker : DatePicker.DatePicker
     , transactionDatePicker : DatePicker.DatePicker
     , fetch : FetchModel
-    , accounts : List Account
-    , categories : List String
+    }
+
+
+type alias TransactionModel m =
+    { m
+        | transactions : List Transaction
+        , transactionPrivate : TransactionPrivate
+        , message : Message.Model
+        , accounts : List Account
+        , categories : List Category
     }
 
 
@@ -131,40 +123,23 @@ type alias ModelTable model =
     { model
         | transactions : List Transaction
         , accounts : List Account
-        , categories : List String
-        , form : TransactionForm
-        , edit : Maybe EditOp
+        , categories : List Category
+        , transactionPrivate : TransactionPrivate
     }
 
 
-init : () -> ( Model, Cmd Msg )
-init _ =
+init : () -> ( TransactionPrivate, Cmd Msg )
+init m =
     let
         ( datePicker, datePickerFx ) =
             DatePicker.init
     in
-    ( { transactions = []
-      , edit = Nothing
-      , form = emptyForm
-      , billDatePicker = datePicker
-      , transactionDatePicker = datePicker
-      , message = noMessage
-      , fetch = resetFetch
-      , accounts = []
-      , categories = []
-      }
+    ( TransactionPrivate Nothing emptyForm datePicker datePicker resetFetch
     , Cmd.batch
-        [ getAccountsCmd
-        , getCategoriesCmd
-        , Cmd.map (ToDatePicker AllDate) datePickerFx
+        [ Cmd.map (ToDatePicker AllDate) datePickerFx
         , fetchDateCmd
         ]
     )
-
-
-noMessage : Message
-noMessage =
-    { level = Alert.info, visibility = Alert.closed, text = "" }
 
 
 billDateSettings : DatePicker.Settings
@@ -199,7 +174,6 @@ resetFetch =
     , username = ""
     , password = ""
     , open = False
-    , avail_backends = []
     }
 
 
@@ -228,8 +202,6 @@ type Msg
     | ChangeToAccount String
     | ToDatePicker DatePickerType DatePicker.Msg
     | GotTransactions (Result Http.Error (List Transaction))
-    | GotAccounts (Result Http.Error (List Account))
-    | GotCategories (Result Http.Error (List String))
     | FetchEditYear String
     | FetchEditMonth String
     | FetchEditUsername String
@@ -240,48 +212,29 @@ type Msg
     | ClickSaveTable (Transaction -> Bool)
     | FinishSaveTable (Transaction -> Bool) (Result Http.Error ())
     | CopyCategories
-    | AlertMsg Alert.Visibility
 
 
 fetchDateCmd =
     Date.today |> Task.perform FetchGotDate
 
 
-getAccountsCmd =
-    Http.get
-        { url = "http://localhost:8000/accounts/"
-        , expect = Http.expectJson GotAccounts accountsParser
-        }
-
-
-getCategoriesCmd =
-    Http.get
-        { url = "http://localhost:8000/categories/"
-        , expect = Http.expectJson GotCategories categoriesParser
-        }
-
-
-fetchUpdateBackends : FetchModel -> List String -> FetchModel
-fetchUpdateBackends m b =
-    let
-        default_backend =
-            List.head b |> Maybe.withDefault ""
-    in
-    { m | avail_backends = b, selected_backend = default_backend }
-
-
-update : Msg -> Model -> ( Model, Cmd Msg )
+update : Msg -> TransactionModel m -> ( TransactionModel m, Cmd Msg )
 update msg model =
     let
+        oldPrivate =
+            model.transactionPrivate
+
         oldForm =
-            model.form
+            oldPrivate.form
 
         oldFetch =
-            model.fetch
+            oldPrivate.fetch
     in
     case msg of
         Add table ->
-            ( { model | form = emptyForm, edit = Just (New table) }, Cmd.none )
+            ( { model | transactionPrivate = { oldPrivate | form = emptyForm, edit = Just (New table) } }
+            , Cmd.none
+            )
 
         Remove index ->
             ( { model | transactions = removeAt index model.transactions }, Cmd.none )
@@ -292,15 +245,17 @@ update msg model =
                     ( model, Cmd.none )
 
                 Just r ->
-                    ( { model | edit = Just (Exist n), form = toForm r }, Cmd.none )
+                    ( { model | transactionPrivate = { oldPrivate | edit = Just (Exist n), form = toForm r } }
+                    , Cmd.none
+                    )
 
         CancelEditRow ->
-            ( { model | edit = Nothing, form = emptyForm }, Cmd.none )
+            ( { model | transactionPrivate = { oldPrivate | edit = Nothing, form = emptyForm } }, Cmd.none )
 
         SaveEditRow ->
-            case createTransaction model.form of
+            case createTransaction model.transactionPrivate.form of
                 Just t ->
-                    case model.edit of
+                    case model.transactionPrivate.edit of
                         Nothing ->
                             ( model, Cmd.none )
 
@@ -308,8 +263,7 @@ update msg model =
                             case e of
                                 Exist i ->
                                     ( { model
-                                        | edit = Nothing
-                                        , form = emptyForm
+                                        | transactionPrivate = { oldPrivate | edit = Nothing, form = emptyForm }
                                         , transactions = setAt i t model.transactions
                                       }
                                     , Cmd.none
@@ -317,8 +271,7 @@ update msg model =
 
                                 New _ ->
                                     ( { model
-                                        | edit = Nothing
-                                        , form = emptyForm
+                                        | transactionPrivate = { oldPrivate | edit = Nothing, form = emptyForm }
                                         , transactions = t :: model.transactions
                                       }
                                     , Cmd.none
@@ -328,21 +281,33 @@ update msg model =
                     ( model, Cmd.none )
 
         EditTransAmount a ->
-            ( { model | form = { oldForm | original_amount = FloatField (String.toFloat a) a } }, Cmd.none )
+            ( { model
+                | transactionPrivate = { oldPrivate | form = { oldForm | original_amount = FloatField (String.toFloat a) a } }
+              }
+            , Cmd.none
+            )
 
         EditBillAmount a ->
-            ( { model | form = { oldForm | billed_amount = FloatField (String.toFloat a) a } }, Cmd.none )
+            ( { model
+                | transactionPrivate = { oldPrivate | form = { oldForm | billed_amount = FloatField (String.toFloat a) a } }
+              }
+            , Cmd.none
+            )
 
         EditDescription a ->
-            ( { model | form = { oldForm | description = a } }, Cmd.none )
+            ( { model | transactionPrivate = { oldPrivate | form = { oldForm | description = a } } }, Cmd.none )
 
         ChangeCategory maybe_i a ->
             case maybe_i of
                 Nothing ->
-                    ( { model | form = { oldForm | category = a } }, Cmd.none )
+                    ( { model
+                        | transactionPrivate = { oldPrivate | form = { oldForm | category = a } }
+                      }
+                    , Cmd.none
+                    )
 
                 Just i ->
-                    case getAt (Debug.log "asd" i) model.transactions of
+                    case getAt i model.transactions of
                         Nothing ->
                             ( model, Cmd.none )
 
@@ -350,19 +315,22 @@ update msg model =
                             ( { model | transactions = setAt i { t | category = a } model.transactions }, Cmd.none )
 
         ChangeCurrency c ->
-            ( { model | form = { oldForm | currency = c } }, Cmd.none )
+            ( { model | transactionPrivate = { oldPrivate | form = { oldForm | currency = c } } }, Cmd.none )
 
         ChangeFromAccount acc ->
             ( { model
-                | form =
-                    { oldForm
-                        | from_account =
-                            -- Workaround an apparent bootstrap bug, where an empty string as select value misbehaves
-                            if acc == "_" then
-                                ""
+                | transactionPrivate =
+                    { oldPrivate
+                        | form =
+                            { oldForm
+                                | from_account =
+                                    -- Workaround an apparent bootstrap bug, where an empty string as select value misbehaves
+                                    if acc == "_" then
+                                        ""
 
-                            else
-                                acc
+                                    else
+                                        acc
+                            }
                     }
               }
             , Cmd.none
@@ -370,14 +338,17 @@ update msg model =
 
         ChangeToAccount acc ->
             ( { model
-                | form =
-                    { oldForm
-                        | to_account =
-                            if acc == "_" then
-                                ""
+                | transactionPrivate =
+                    { oldPrivate
+                        | form =
+                            { oldForm
+                                | to_account =
+                                    if acc == "_" then
+                                        ""
 
-                            else
-                                acc
+                                    else
+                                        acc
+                            }
                     }
               }
             , Cmd.none
@@ -388,13 +359,13 @@ update msg model =
                 ( picker, settings ) =
                     case pickerType of
                         BillDate ->
-                            ( model.billDatePicker, billDateSettings )
+                            ( model.transactionPrivate.billDatePicker, billDateSettings )
 
                         TransactionDate ->
-                            ( model.transactionDatePicker, transactionDateSettings )
+                            ( model.transactionPrivate.transactionDatePicker, transactionDateSettings )
 
                         AllDate ->
-                            ( model.billDatePicker, billDateSettings )
+                            ( model.transactionPrivate.billDatePicker, billDateSettings )
 
                 ( newDatePicker, dateEvent ) =
                     DatePicker.update settings subMsg picker
@@ -410,25 +381,34 @@ update msg model =
             case pickerType of
                 BillDate ->
                     ( { model
-                        | form = { oldForm | bill_date = newDate }
-                        , billDatePicker = newDatePicker
+                        | transactionPrivate =
+                            { oldPrivate
+                                | form = { oldForm | bill_date = newDate }
+                                , billDatePicker = newDatePicker
+                            }
                       }
                     , Cmd.none
                     )
 
                 TransactionDate ->
                     ( { model
-                        | form = { oldForm | transaction_date = newDate }
-                        , transactionDatePicker = newDatePicker
+                        | transactionPrivate =
+                            { oldPrivate
+                                | form = { oldForm | transaction_date = newDate }
+                                , transactionDatePicker = newDatePicker
+                            }
                       }
                     , Cmd.none
                     )
 
                 AllDate ->
                     ( { model
-                        | form = { oldForm | transaction_date = newDate, bill_date = newDate }
-                        , transactionDatePicker = newDatePicker
-                        , billDatePicker = newDatePicker
+                        | transactionPrivate =
+                            { oldPrivate
+                                | form = { oldForm | transaction_date = newDate, bill_date = newDate }
+                                , transactionDatePicker = newDatePicker
+                                , billDatePicker = newDatePicker
+                            }
                       }
                     , Cmd.none
                     )
@@ -436,56 +416,59 @@ update msg model =
         GotTransactions res ->
             case res of
                 Ok l ->
-                    ( { model | transactions = l ++ model.transactions, message = Message Alert.info "Added new entries" Alert.shown }
+                    ( { model | transactions = l ++ model.transactions, message = Message.info "Added new entries" }
                     , Cmd.none
                     )
 
                 Err (Http.BadBody e) ->
-                    ( { model | message = Message Alert.danger e Alert.shown }, Cmd.none )
+                    ( { model | message = Message.danger e }, Cmd.none )
 
                 Err _ ->
-                    ( { model | message = Message Alert.danger "Error!" Alert.shown }, Cmd.none )
+                    ( { model | message = Message.danger "Error!" }, Cmd.none )
 
         FetchEditYear y ->
-            ( { model | fetch = { oldFetch | year = IntField (String.toInt y) y } }, Cmd.none )
+            ( { model
+                | transactionPrivate =
+                    { oldPrivate
+                        | fetch = { oldFetch | year = IntField (String.toInt y) y }
+                    }
+              }
+            , Cmd.none
+            )
 
         FetchEditMonth m ->
-            ( { model | fetch = { oldFetch | month = IntField (String.toInt m) m } }, Cmd.none )
+            ( { model
+                | transactionPrivate =
+                    { oldPrivate
+                        | fetch = { oldFetch | month = IntField (String.toInt m) m }
+                    }
+              }
+            , Cmd.none
+            )
 
         FetchEditUsername m ->
-            ( { model | fetch = { oldFetch | username = m } }, Cmd.none )
+            ( { model
+                | transactionPrivate =
+                    { oldPrivate | fetch = { oldFetch | username = m } }
+              }
+            , Cmd.none
+            )
 
         FetchEditPassword m ->
-            ( { model | fetch = { oldFetch | password = m } }, Cmd.none )
+            ( { model
+                | transactionPrivate =
+                    { oldPrivate | fetch = { oldFetch | password = m } }
+              }
+            , Cmd.none
+            )
 
         FetchChangeBackend a ->
-            ( { model | fetch = { oldFetch | selected_backend = a } }, Cmd.none )
-
-        GotAccounts res ->
-            case res of
-                Ok a ->
-                    let
-                        backends =
-                            List.map .backend_type a |> List.Extra.unique
-                    in
-                    ( { model | accounts = a, fetch = fetchUpdateBackends oldFetch backends }, Cmd.none )
-
-                Err (Http.BadBody e) ->
-                    ( { model | message = Message Alert.danger e Alert.shown }, Cmd.none )
-
-                Err _ ->
-                    ( { model | message = Message Alert.danger "Error!" Alert.shown }, Cmd.none )
-
-        GotCategories res ->
-            case res of
-                Ok a ->
-                    ( { model | categories = a }, Cmd.none )
-
-                Err (Http.BadBody e) ->
-                    ( { model | message = Message Alert.danger e Alert.shown }, Cmd.none )
-
-                Err _ ->
-                    ( { model | message = Message Alert.danger "Error!" Alert.shown }, Cmd.none )
+            ( { model
+                | transactionPrivate =
+                    { oldPrivate | fetch = { oldFetch | selected_backend = a } }
+              }
+            , Cmd.none
+            )
 
         FetchGotDate d ->
             let
@@ -496,10 +479,13 @@ update msg model =
                     Date.monthNumber d
             in
             ( { model
-                | fetch =
-                    { oldFetch
-                        | year = IntField (Just y) (String.fromInt y)
-                        , month = IntField (Just m) (String.fromInt m)
+                | transactionPrivate =
+                    { oldPrivate
+                        | fetch =
+                            { oldFetch
+                                | year = IntField (Just y) (String.fromInt y)
+                                , month = IntField (Just m) (String.fromInt m)
+                            }
                     }
               }
             , Cmd.none
@@ -508,27 +494,27 @@ update msg model =
         FetchGo ->
             let
                 (IntField _ monthValue) =
-                    model.fetch.month
+                    model.transactionPrivate.fetch.month
 
                 (IntField _ yearValue) =
-                    model.fetch.year
+                    model.transactionPrivate.fetch.year
 
                 fetchCmd =
                     Http.post
-                        { url = "http://localhost:8000/fetch/" ++ model.fetch.selected_backend
+                        { url = "http://localhost:8000/fetch/" ++ model.transactionPrivate.fetch.selected_backend
                         , expect = Http.expectJson GotTransactions transactionParser
                         , body =
                             Http.jsonBody
                                 (E.object
-                                    [ ( "user", E.string model.fetch.username )
-                                    , ( "pass", E.string model.fetch.password )
+                                    [ ( "user", E.string model.transactionPrivate.fetch.username )
+                                    , ( "pass", E.string model.transactionPrivate.fetch.password )
                                     , ( "month", E.string monthValue )
                                     , ( "year", E.string yearValue )
                                     ]
                                 )
                         }
             in
-            ( { model | message = Message Alert.info "Fetching..." Alert.shown }, fetchCmd )
+            ( { model | message = Message.info "Fetching..." }, fetchCmd )
 
         ClickSaveTable table ->
             let
@@ -543,7 +529,7 @@ update msg model =
                             Http.jsonBody (E.list transactionEncoder rows)
                         }
             in
-            ( { model | message = Message Alert.info "Saving..." Alert.shown }, fetchCmd )
+            ( { model | message = Message.info "Saving..." }, fetchCmd )
 
         FinishSaveTable table res ->
             let
@@ -552,23 +538,16 @@ update msg model =
             in
             case res of
                 Ok () ->
-                    ( { model | transactions = List.filter inverseTable model.transactions, message = Message Alert.info "Saved!" Alert.shown }, Cmd.none )
+                    ( { model | transactions = List.filter inverseTable model.transactions, message = Message.info "Saved!" }, Cmd.none )
 
                 Err (Http.BadBody e) ->
-                    ( { model | message = Message Alert.danger e Alert.shown }, Cmd.none )
+                    ( { model | message = Message.danger e }, Cmd.none )
 
                 Err _ ->
-                    ( { model | message = Message Alert.danger "Error!" Alert.shown }, Cmd.none )
+                    ( { model | message = Message.danger "Error!" }, Cmd.none )
 
         CopyCategories ->
             ( model, toClipboard (categoriesToText model.transactions) )
-
-        AlertMsg m ->
-            let
-                oldMessage =
-                    model.message
-            in
-            ( { model | message = { oldMessage | visibility = m } }, Cmd.none )
 
 
 dateDecoder : D.Decoder Date
@@ -588,17 +567,6 @@ dateDecoder =
 categoriesParser : D.Decoder (List String)
 categoriesParser =
     D.list (D.field "title" D.string)
-
-
-accountsParser : D.Decoder (List Account)
-accountsParser =
-    D.list
-        (D.map4 Account
-            (D.field "id" D.int)
-            (D.field "name" D.string)
-            (D.field "backend_id" D.string)
-            (D.field "backend_type" D.string)
-        )
 
 
 transactionParser : D.Decoder (List Transaction)
@@ -757,8 +725,12 @@ intInput place field msg =
             Input.text [ Input.placeholder place, Input.value s, Input.onInput msg ]
 
 
-fetchView : FetchModel -> Html Msg
-fetchView f =
+fetchView : FetchModel -> List Account -> Html Msg
+fetchView f accounts =
+    let
+        avail_backends =
+            accounts |> List.map .backend_type |> unique
+    in
     Form.formInline []
         [ Input.text [ Input.placeholder "Username", Input.value f.username, Input.onInput FetchEditUsername ]
         , Input.password [ Input.placeholder "Password", Input.value f.password, Input.onInput FetchEditPassword ]
@@ -766,8 +738,8 @@ fetchView f =
         , intInput "Year" f.year FetchEditYear
         , Select.select [ Select.onChange FetchChangeBackend ]
             (List.map2 (selectItemWithDefault f.selected_backend)
-                f.avail_backends
-                f.avail_backends
+                ("" :: avail_backends)
+                ("--" :: avail_backends)
             )
         , Button.button
             [ Button.outlinePrimary
@@ -777,9 +749,16 @@ fetchView f =
         ]
 
 
-viewTable : ModelTable Model -> TableType -> (Transaction -> Bool) -> Html Msg
+viewTable : ModelTable (TransactionModel m) -> TableType -> (Transaction -> Bool) -> Html Msg
 viewTable model tt transFilter =
     let
+        categories : List String
+        categories =
+            model.categories |> List.map .title
+
+        tei =
+            model.transactionPrivate
+
         entries : List ( Int, Transaction )
         entries =
             model.transactions |> List.indexedMap Tuple.pair |> List.filter (Tuple.second >> transFilter)
@@ -804,23 +783,23 @@ viewTable model tt transFilter =
             , Table.td [] [ text t.description ]
             , Table.td []
                 [ Select.select [ Select.onChange (ChangeCategory (Just i)) ]
-                    (List.map2 (selectItemWithDefault t.category) ("" :: model.categories) ("--" :: model.categories))
+                    (List.map2 (selectItemWithDefault t.category) ("" :: categories) ("--" :: categories))
                 ]
             ]
 
         editableRow : Maybe Int -> List (Table.Cell Msg)
         editableRow maybe_i =
-            [ Table.td [] [ DatePicker.view model.form.transaction_date transactionDateSettings model.transactionDatePicker |> Html.map (ToDatePicker TransactionDate) ]
-            , Table.td [] [ DatePicker.view model.form.bill_date billDateSettings model.billDatePicker |> Html.map (ToDatePicker BillDate) ]
-            , Table.td [] [ listAccounts ChangeFromAccount model.form.from_account ]
-            , Table.td [] [ listAccounts ChangeToAccount model.form.to_account ]
-            , Table.td [] [ floatInput "Original Amount" model.form.original_amount EditTransAmount ]
-            , Table.td [] [ floatInput "Billed Amount" model.form.billed_amount EditBillAmount ]
+            [ Table.td [] [ DatePicker.view tei.form.transaction_date transactionDateSettings tei.transactionDatePicker |> Html.map (ToDatePicker TransactionDate) ]
+            , Table.td [] [ DatePicker.view tei.form.bill_date billDateSettings tei.billDatePicker |> Html.map (ToDatePicker BillDate) ]
+            , Table.td [] [ listAccounts ChangeFromAccount tei.form.from_account ]
+            , Table.td [] [ listAccounts ChangeToAccount tei.form.to_account ]
+            , Table.td [] [ floatInput "Original Amount" tei.form.original_amount EditTransAmount ]
+            , Table.td [] [ floatInput "Billed Amount" tei.form.billed_amount EditBillAmount ]
             , Table.td [] [ Select.select [ Select.onChange ChangeCurrency ] (List.map selectItem currencies) ]
-            , Table.td [] [ Input.text [ Input.placeholder "Description", Input.value model.form.description, Input.onInput EditDescription ] ]
+            , Table.td [] [ Input.text [ Input.placeholder "Description", Input.value tei.form.description, Input.onInput EditDescription ] ]
             , Table.td []
                 [ Select.select [ Select.onChange (ChangeCategory Nothing) ]
-                    (List.map2 (selectItemWithDefault model.form.category) ("" :: model.categories) ("--" :: model.categories))
+                    (List.map2 (selectItemWithDefault tei.form.category) ("" :: categories) ("--" :: categories))
                 ]
             ]
 
@@ -883,7 +862,7 @@ viewTable model tt transFilter =
                     displayRow
                     editableRow
                     tableEventToMessage
-                    (toEditState model.edit)
+                    (toEditState tei.edit)
                 )
         }
 
@@ -965,16 +944,11 @@ categoryTableView transactions =
         )
 
 
-view : Model -> Html Msg
+view : TransactionModel m -> Html Msg
 view model =
     div []
         [ CDN.stylesheet
-        , Alert.config
-            |> Alert.dismissable AlertMsg
-            |> model.message.level
-            |> Alert.children [ text model.message.text ]
-            |> Alert.view model.message.visibility
-        , fetchView model.fetch
+        , fetchView model.transactionPrivate.fetch model.accounts
         , h2 []
             [ text "Expenses"
             , Button.button
