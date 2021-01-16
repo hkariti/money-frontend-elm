@@ -1,4 +1,4 @@
-port module Transactions exposing (Msg, Transaction, TransactionPrivate, init, update, view)
+port module Transactions exposing (Msg, Transaction, TransactionPrivate, categoryTableView, init, transactionParser, update, view)
 
 import Account exposing (Account)
 import Bootstrap.Button as Button
@@ -924,10 +924,10 @@ summaryTableView transactions =
         )
 
 
-categoryTableView : List Transaction -> Html Msg
+categoryTableView : List Transaction -> Html msg
 categoryTableView transactions =
     let
-        tableRow : ( String, Float ) -> Table.Row Msg
+        tableRow : ( String, Float ) -> Table.Row msg
         tableRow ( c, v ) =
             Table.tr []
                 [ Table.td []

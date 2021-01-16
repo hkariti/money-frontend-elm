@@ -11,6 +11,7 @@ import Categories
 import Html exposing (..)
 import Html.Attributes exposing (..)
 import Message
+import Summary
 import Transactions
 import Url
 import Url.Parser as UrlParser exposing ((</>), Parser, s, top)
@@ -39,6 +40,7 @@ type alias Model =
     , accountPrivate : Account.AccountPrivate
     , categories : List Categories.Category
     , categoryPrivate : Categories.CategoryPrivate
+    , summaryPrivate : Summary.SummaryPrivate
     , message : Message.Model
     , key : Nav.Key
     , navState : Navbar.State
@@ -48,7 +50,7 @@ type alias Model =
 
 type Page
     = NotFound
-    | Home
+    | SummaryPage
     | TransPage
     | AccountsPage
     | CategoriesPage
@@ -57,6 +59,9 @@ type Page
 init : () -> Url.Url -> Nav.Key -> ( Model, Cmd Msg )
 init flags url key =
     let
+        ( summaryPrivate, sumCmd ) =
+            Summary.init ()
+
         ( transactionPrivate, transCmd ) =
             Transactions.init ()
 
@@ -72,7 +77,7 @@ init flags url key =
         page =
             urlUpdate url
     in
-    ( Model [] transactionPrivate [] accountPrivate [] categoryPrivate Message.hide key navState page
+    ( Model [] transactionPrivate [] accountPrivate [] categoryPrivate summaryPrivate Message.hide key navState page
     , Cmd.batch
         [ Cmd.map ToTransaction transCmd
         , navCmd
@@ -80,6 +85,7 @@ init flags url key =
             accCmd
         , Cmd.map ToCategory
             catCmd
+        , Cmd.map ToSummary sumCmd
         ]
     )
 
@@ -88,6 +94,7 @@ type Msg
     = ToTransaction Transactions.Msg
     | ToAccount Account.Msg
     | ToCategory Categories.Msg
+    | ToSummary Summary.Msg
     | MsgNone
     | NavMsg Navbar.State
     | LinkClicked Browser.UrlRequest
@@ -130,6 +137,13 @@ update msg model =
             in
             ( newModel, Cmd.map ToCategory cmd )
 
+        ToSummary t ->
+            let
+                ( newModel, cmd ) =
+                    Summary.update t model
+            in
+            ( newModel, Cmd.map ToSummary cmd )
+
         MsgNone ->
             ( model, Cmd.none )
 
@@ -159,7 +173,8 @@ decode url =
 routeParser : Parser (Page -> a) a
 routeParser =
     UrlParser.oneOf
-        [ UrlParser.map Home top
+        [ UrlParser.map SummaryPage top
+        , UrlParser.map SummaryPage (UrlParser.s "summary")
         , UrlParser.map TransPage (UrlParser.s "transactions")
         , UrlParser.map AccountsPage (UrlParser.s "accounts")
         , UrlParser.map CategoriesPage (UrlParser.s "categories")
@@ -185,7 +200,8 @@ menu model =
         |> Navbar.container
         |> Navbar.brand [ href "#" ] [ text "Elm Bootstrap" ]
         |> Navbar.items
-            [ Navbar.itemLink [ href "#transactions" ] [ text "Transactions" ]
+            [ Navbar.itemLink [ href "#summary" ] [ text "Summary" ]
+            , Navbar.itemLink [ href "#transactions" ] [ text "Transactions" ]
             , Navbar.itemLink [ href "#accounts" ] [ text "Accounts" ]
             , Navbar.itemLink [ href "#categories" ] [ text "Categories" ]
             ]
@@ -198,8 +214,8 @@ mainContent model =
         NotFound ->
             text "NOT Found!"
 
-        Home ->
-            text "Home"
+        SummaryPage ->
+            Html.map ToSummary (Summary.view model)
 
         TransPage ->
             Html.map ToTransaction (Transactions.view model)
