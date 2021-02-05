@@ -237,7 +237,12 @@ update msg model =
             )
 
         Remove index ->
-            ( { model | transactions = removeAt index model.transactions }, Cmd.none )
+            ( { model
+                | transactionPrivate = { oldPrivate | edit = Nothing, form = emptyForm }
+                , transactions = removeAt index model.transactions
+              }
+            , Cmd.none
+            )
 
         StartEditRow n ->
             case getAt n model.transactions of
