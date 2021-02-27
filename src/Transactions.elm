@@ -26,6 +26,7 @@ import List.Extra exposing (gatherEqualsBy, gatherWith, getAt, removeAt, setAt, 
 import Maybe.Extra exposing (cons, isJust, isNothing, join)
 import Message
 import Misc exposing (bootstrapIcon)
+import Round
 import Task
 
 
@@ -641,7 +642,7 @@ rowsByCategory =
 
 categoriesToText : List Transaction -> String
 categoriesToText =
-    rowsByCategory >> List.map (\( k, v ) -> k ++ ": " ++ String.fromFloat v) >> String.join " "
+    rowsByCategory >> List.map (\( k, v ) -> k ++ ": " ++ Round.round 2 v) >> String.join " "
 
 
 createTransaction : TransactionForm -> Maybe Transaction
@@ -686,8 +687,8 @@ toForm : Transaction -> TransactionForm
 toForm t =
     { transaction_date = Just t.transaction_date
     , bill_date = Just t.transaction_date
-    , original_amount = FloatField (Just t.original_amount) (String.fromFloat t.original_amount)
-    , billed_amount = FloatField (Just t.billed_amount) (String.fromFloat t.billed_amount)
+    , original_amount = FloatField (Just t.original_amount) (Round.round 2 t.original_amount)
+    , billed_amount = FloatField (Just t.billed_amount) (Round.round 2 t.billed_amount)
     , currency = t.currency
     , description = t.description
     , from_account = t.from_account
@@ -782,8 +783,8 @@ viewTable model tt transFilter =
             , Table.td [] [ text (toIsoString t.bill_date) ]
             , Table.td [] [ text t.from_account ]
             , Table.td [] [ text t.to_account ]
-            , Table.td [] [ text (String.fromFloat t.original_amount) ]
-            , Table.td [] [ text (String.fromFloat t.billed_amount) ]
+            , Table.td [] [ text (Round.round 2 t.original_amount) ]
+            , Table.td [] [ text (Round.round 2 t.billed_amount) ]
             , Table.td [] [ text t.currency ]
             , Table.td [] [ text t.description ]
             , Table.td []
@@ -911,7 +912,7 @@ summaryTableView transactions =
             Table.tr []
                 [ Table.td [] [ text r.from ]
                 , Table.td [] [ text r.to ]
-                , Table.td [] [ text (r.total |> String.fromFloat) ]
+                , Table.td [] [ text (r.total |> Round.round 2) ]
                 ]
     in
     Table.simpleTable
@@ -937,7 +938,7 @@ categoryTableView transactions =
                       else
                         text c
                     ]
-                , Table.td [] [ text (String.fromFloat v) ]
+                , Table.td [] [ text (Round.round 2 v) ]
                 ]
     in
     Table.simpleTable
