@@ -11,6 +11,7 @@ import Categories
 import Html exposing (..)
 import Html.Attributes exposing (..)
 import Message
+import Patterns
 import Summary
 import Transactions
 import Url
@@ -40,6 +41,7 @@ type alias Model =
     , accountPrivate : Account.AccountPrivate
     , categories : List Categories.Category
     , categoryPrivate : Categories.CategoryPrivate
+    , patternPrivate : Patterns.PatternPrivate
     , summaryPrivate : Summary.SummaryPrivate
     , message : Message.Model
     , key : Nav.Key
@@ -54,6 +56,7 @@ type Page
     | TransPage
     | AccountsPage
     | CategoriesPage
+    | PatternsPage
 
 
 init : () -> Url.Url -> Nav.Key -> ( Model, Cmd Msg )
@@ -71,13 +74,16 @@ init flags url key =
         ( categoryPrivate, catCmd ) =
             Categories.init ()
 
+        ( patternPrivate, patCmd ) =
+            Patterns.init ()
+
         ( navState, navCmd ) =
             Navbar.initialState NavMsg
 
         page =
             urlUpdate url
     in
-    ( Model [] transactionPrivate [] accountPrivate [] categoryPrivate summaryPrivate Message.hide key navState page
+    ( Model [] transactionPrivate [] accountPrivate [] categoryPrivate patternPrivate summaryPrivate Message.hide key navState page
     , Cmd.batch
         [ Cmd.map ToTransaction transCmd
         , navCmd
@@ -85,6 +91,8 @@ init flags url key =
             accCmd
         , Cmd.map ToCategory
             catCmd
+        , Cmd.map ToPattern
+            patCmd
         , Cmd.map ToSummary sumCmd
         ]
     )
@@ -94,6 +102,7 @@ type Msg
     = ToTransaction Transactions.Msg
     | ToAccount Account.Msg
     | ToCategory Categories.Msg
+    | ToPattern Patterns.Msg
     | ToSummary Summary.Msg
     | MsgNone
     | NavMsg Navbar.State
@@ -137,6 +146,13 @@ update msg model =
             in
             ( newModel, Cmd.map ToCategory cmd )
 
+        ToPattern t ->
+            let
+                ( newModel, cmd ) =
+                    Patterns.update t model
+            in
+            ( newModel, Cmd.map ToPattern cmd )
+
         ToSummary t ->
             let
                 ( newModel, cmd ) =
@@ -178,6 +194,7 @@ routeParser =
         , UrlParser.map TransPage (UrlParser.s "transactions")
         , UrlParser.map AccountsPage (UrlParser.s "accounts")
         , UrlParser.map CategoriesPage (UrlParser.s "categories")
+        , UrlParser.map PatternsPage (UrlParser.s "patterns")
         ]
 
 
@@ -204,6 +221,7 @@ menu model =
             , Navbar.itemLink [ href "#transactions" ] [ text "Transactions" ]
             , Navbar.itemLink [ href "#accounts" ] [ text "Accounts" ]
             , Navbar.itemLink [ href "#categories" ] [ text "Categories" ]
+            , Navbar.itemLink [ href "#patterns" ] [ text "Patterns" ]
             ]
         |> Navbar.view model.navState
 
@@ -225,3 +243,6 @@ mainContent model =
 
         CategoriesPage ->
             Html.map ToCategory (Categories.view model)
+
+        PatternsPage ->
+            Html.map ToPattern (Patterns.view model)
