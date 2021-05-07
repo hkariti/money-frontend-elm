@@ -22,7 +22,7 @@ import Http
 import Json.Decode as D
 import Json.Decode.Pipeline as Dp
 import Json.Encode as E
-import List.Extra exposing (gatherEqualsBy, gatherWith, getAt, removeAt, setAt, unique)
+import List.Extra exposing (findIndices, gatherEqualsBy, gatherWith, getAt, removeAt, removeIfIndex, setAt, unique)
 import Maybe.Extra exposing (cons, isJust, isNothing, join)
 import Message
 import Misc exposing (bootstrapIcon)
@@ -211,7 +211,7 @@ type Msg
     | FetchGotDate Date
     | FetchGo
     | ClickSaveTable (Transaction -> Bool)
-    | FinishSaveTable (Transaction -> Bool) (Result Http.Error ())
+    | FinishSaveTable (Transaction -> Bool) (Result Http.Error (List Int))
     | CopyCategories
 
 
@@ -530,7 +530,7 @@ update msg model =
                 fetchCmd =
                     Http.post
                         { url = "http://localhost:8000/transactions/"
-                        , expect = Http.expectWhatever (FinishSaveTable table)
+                        , expect = Http.expectJson (FinishSaveTable table) updateResponseParser
                         , body =
                             Http.jsonBody (E.list transactionEncoder rows)
                         }
@@ -539,12 +539,32 @@ update msg model =
 
         FinishSaveTable table res ->
             let
+                inverseTable : Transaction -> Bool
                 inverseTable =
                     table >> not
+
+                removeIndices : List Int -> List a -> List a
+                removeIndices i =
+                    removeIfIndex (\x -> List.member x i)
+
+                getIndices : List Int -> List a -> List a
+                getIndices i =
+                    removeIfIndex (\x -> not (List.member x i))
+
+                goodWritesIndices : List Int -> List Int
+                goodWritesIndices =
+                    findIndices table model.transactions |> getIndices
+
+                filterTrans bad_indices ( i, cell ) =
+                    inverseTable cell || List.member i (goodWritesIndices bad_indices)
             in
             case res of
-                Ok () ->
-                    ( { model | transactions = List.filter inverseTable model.transactions, message = Message.info "Saved!" }, Cmd.none )
+                Ok bad_indices ->
+                    if List.isEmpty bad_indices then
+                        ( { model | transactions = List.filter inverseTable model.transactions, message = Message.info "Saved!" }, Cmd.none )
+
+                    else
+                        ( { model | transactions = List.indexedMap Tuple.pair model.transactions |> List.filter (filterTrans bad_indices) |> List.map Tuple.second, message = Message.warn "Saved with some errors" }, Cmd.none )
 
                 Err (Http.BadBody e) ->
                     ( { model | message = Message.danger e }, Cmd.none )
@@ -568,6 +588,15 @@ dateDecoder =
                     D.fail "Invaid date format"
     in
     D.map Date.fromIsoString D.string |> D.andThen dateOrFail
+
+
+updateResponseParser : D.Decoder (List Int)
+updateResponseParser =
+    D.map (Dict.keys >> List.filterMap String.toInt) (D.field "errors" (D.dict D.value))
+
+
+
+--D.field "errors" (D.keyValuePairs D.value)
 
 
 categoriesParser : D.Decoder (List String)
