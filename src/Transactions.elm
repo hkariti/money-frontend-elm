@@ -84,6 +84,8 @@ type alias FetchModel =
     { selected_backend : String
     , month : IntField
     , year : IntField
+    , end_month : IntField
+    , end_year : IntField
     , username : String
     , password : String
     , open : Bool
@@ -172,6 +174,8 @@ resetFetch =
     { selected_backend = ""
     , month = IntField Nothing "0"
     , year = IntField Nothing "0"
+    , end_month = IntField Nothing ""
+    , end_year = IntField Nothing ""
     , username = ""
     , password = ""
     , open = False
@@ -205,6 +209,8 @@ type Msg
     | GotTransactions (Result Http.Error (List Transaction))
     | FetchEditYear String
     | FetchEditMonth String
+    | FetchEditEndYear String
+    | FetchEditEndMonth String
     | FetchEditUsername String
     | FetchEditPassword String
     | FetchChangeBackend String
@@ -452,6 +458,26 @@ update msg model =
             , Cmd.none
             )
 
+        FetchEditEndYear y ->
+            ( { model
+                | transactionPrivate =
+                    { oldPrivate
+                        | fetch = { oldFetch | end_year = IntField (String.toInt y) y }
+                    }
+              }
+            , Cmd.none
+            )
+
+        FetchEditEndMonth y ->
+            ( { model
+                | transactionPrivate =
+                    { oldPrivate
+                        | fetch = { oldFetch | end_month = IntField (String.toInt y) y }
+                    }
+              }
+            , Cmd.none
+            )
+
         FetchEditUsername m ->
             ( { model
                 | transactionPrivate =
@@ -505,11 +531,27 @@ update msg model =
                 (IntField _ yearValue) =
                     model.transactionPrivate.fetch.year
 
-                fetchCmd =
-                    Http.post
-                        { url = "http://localhost:8000/fetch/" ++ model.transactionPrivate.fetch.selected_backend
-                        , expect = Http.expectJson GotTransactions transactionParser
-                        , body =
+                (IntField endMonthMaybe _) =
+                    model.transactionPrivate.fetch.end_month
+
+                (IntField endYearMaybe _) =
+                    model.transactionPrivate.fetch.end_year
+
+                body =
+                    case ( endMonthMaybe, endYearMaybe ) of
+                        ( Just endMonthValue, Just endYearValue ) ->
+                            Http.jsonBody
+                                (E.object
+                                    [ ( "user", E.string model.transactionPrivate.fetch.username )
+                                    , ( "pass", E.string model.transactionPrivate.fetch.password )
+                                    , ( "month", E.string monthValue )
+                                    , ( "year", E.string yearValue )
+                                    , ( "end_month", E.string (String.fromInt endMonthValue) )
+                                    , ( "end_year", E.string (String.fromInt endYearValue) )
+                                    ]
+                                )
+
+                        ( _, _ ) ->
                             Http.jsonBody
                                 (E.object
                                     [ ( "user", E.string model.transactionPrivate.fetch.username )
@@ -518,6 +560,12 @@ update msg model =
                                     , ( "year", E.string yearValue )
                                     ]
                                 )
+
+                fetchCmd =
+                    Http.post
+                        { url = "http://localhost:8000/fetch/" ++ model.transactionPrivate.fetch.selected_backend
+                        , expect = Http.expectJson GotTransactions transactionParser
+                        , body = body
                         }
             in
             ( { model | message = Message.info "Fetching..." }, fetchCmd )
@@ -760,6 +808,11 @@ intInput place field msg =
             Input.text [ Input.placeholder place, Input.value s, Input.onInput msg ]
 
 
+intInputValid : String -> IntField -> (String -> msg) -> Html msg
+intInputValid place (IntField _ s) msg =
+    Input.text [ Input.placeholder place, Input.value s, Input.onInput msg ]
+
+
 fetchView : FetchModel -> List Account -> Html Msg
 fetchView f accounts =
     let
@@ -771,6 +824,8 @@ fetchView f accounts =
         , Input.password [ Input.placeholder "Password", Input.value f.password, Input.onInput FetchEditPassword ]
         , intInput "Month" f.month FetchEditMonth
         , intInput "Year" f.year FetchEditYear
+        , intInputValid "End month" f.end_month FetchEditEndMonth
+        , intInputValid "End year" f.end_year FetchEditEndYear
         , Select.select [ Select.onChange FetchChangeBackend ]
             (List.map2 (selectItemWithDefault f.selected_backend)
                 ("" :: avail_backends)
